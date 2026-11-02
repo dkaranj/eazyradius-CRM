@@ -8,7 +8,7 @@
  * Roles
  *   admin       -> tbl_users (SuperAdmin, Admin, Report, Agent, Sales ...)
  *   technician  -> tbl_users whose user_type is listed in $config['mobile_api_tech_types']
- *                  (default: Tech,Technician). Admins may also log in "as technician".
+ *                  (default: Technician,Tech; the first one is what the app assigns). Admins may also log in "as technician".
  *   client      -> tbl_customers
  *
  * Auth: POST a=login returns a token. Send it later as header X-Mobile-Token
@@ -58,6 +58,15 @@ function mobile_api()
             case 'admin_transactions':
                 mobile_api_need($role, ['admin']);
                 mobile_api_transactions(null);
+            case 'admin_users':
+                mobile_api_need($role, ['admin']);
+                mobile_api_users_list($s);
+            case 'admin_user_save':
+                mobile_api_need($role, ['admin']);
+                mobile_api_user_save($s);
+            case 'admin_user_delete':
+                mobile_api_need($role, ['admin']);
+                mobile_api_user_delete($s);
 
             // ---- technician ----
             case 'tech_jobs':
@@ -150,7 +159,7 @@ function mobile_api_tech_types()
 {
     global $config;
     $raw = isset($config['mobile_api_tech_types']) && $config['mobile_api_tech_types'] !== ''
-        ? $config['mobile_api_tech_types'] : 'Tech,Technician';
+        ? $config['mobile_api_tech_types'] : 'Technician,Tech';
     return array_map('strtolower', array_map('trim', explode(',', $raw)));
 }
 
@@ -182,13 +191,15 @@ function mobile_api_login()
     $role = null;
     $uid = 0;
     $name = '';
+    $utype = '';
 
     $admin = ORM::for_table('tbl_users')->where('username', $u)->find_one();
     if ($admin && mobile_api_verify_admin($p, $admin['password'])) {
         if (isset($admin['status']) && $admin['status'] !== 'Active') {
             mobile_api_fail('Account is not active', 403);
         }
-        $type = strtolower((string) $admin['user_type']);
+        $utype = (string) $admin['user_type'];
+        $type = strtolower($utype);
         if (in_array($type, mobile_api_tech_types(), true)) {
             $role = 'technician';
         } elseif ($asTech && in_array($type, ['superadmin', 'admin'], true)) {
@@ -223,7 +234,7 @@ function mobile_api_login()
     $t->last_used = date('Y-m-d H:i:s');
     $t->save();
 
-    mobile_api_out(['ok' => true, 'token' => $token, 'role' => $role, 'name' => $name]);
+    mobile_api_out(['ok' => true, 'token' => $token, 'role' => $role, 'name' => $name, 'user_type' => $utype]);
 }
 
 function mobile_api_auth()
@@ -578,4 +589,239 @@ function mobile_api_client_buy($s)
         mobile_api_fail('Could not activate plan: ' . $e->getMessage(), 500);
     }
     mobile_api_out(['ok' => true, 'message' => $plan['name_plan'] . ' activated']);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* staff management (SuperAdmin: everyone, Admin: non-admin roles)     */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_all_roles()
+{
+    global $config;
+    $raw = isset($config['mobile_api_tech_types']) && $config['mobile_api_tech_types'] !== ''
+        ? $config['mobile_api_tech_types'] : 'Technician,Tech';
+    $parts = array_values(array_filter(array_map('trim', explode(',', $raw))));
+    $tech = $parts ? $parts[0] : 'Technician';
+    return ['SuperAdmin', 'Admin', 'Agent', 'Sales', 'Report', $tech];
+}
+
+function mobile_api_actor($s)
+{
+    $u = ORM::for_table('tbl_users')->find_one($s['user_id']);
+    if (!$u) {
+        mobile_api_fail('unauthorized', 401);
+    }
+    return $u;
+}
+
+function mobile_api_is_privileged($type)
+{
+    return in_array(strtolower((string) $type), ['superadmin', 'admin'], true);
+}
+
+function mobile_api_can_manage($actor, $targetType)
+{
+    $a = strtolower((string) $actor['user_type']);
+    if ($a === 'superadmin') {
+        return true;
+    }
+    if ($a === 'admin') {
+        return !mobile_api_is_privileged($targetType);
+    }
+    return false;
+}
+
+function mobile_api_assignable_roles($actor)
+{
+    $out = [];
+    foreach (mobile_api_all_roles() as $r) {
+        if (mobile_api_can_manage($actor, $r)) {
+            $out[] = $r;
+        }
+    }
+    return $out;
+}
+
+function mobile_api_need_manager($actor)
+{
+    if (!in_array(strtolower((string) $actor['user_type']), ['superadmin', 'admin'], true)) {
+        mobile_api_fail('Only SuperAdmin or Admin can manage users', 403);
+    }
+}
+
+function mobile_api_other_active_supers($exceptId)
+{
+    return ORM::for_table('tbl_users')
+        ->where_raw("LOWER(user_type) = 'superadmin'")
+        ->where('status', 'Active')
+        ->where_not_equal('id', $exceptId)
+        ->count();
+}
+
+function mobile_api_revoke_staff_tokens($userId)
+{
+    ORM::for_table('tbl_mobile_tokens')
+        ->where('user_id', $userId)
+        ->where_in('role', ['admin', 'technician'])
+        ->delete_many();
+}
+
+function mobile_api_hash_pw($pw)
+{
+    if (class_exists('Password') && method_exists('Password', '_crypt')) {
+        return Password::_crypt($pw);
+    }
+    return password_hash($pw, PASSWORD_DEFAULT);
+}
+
+function mobile_api_users_list($s)
+{
+    $actor = mobile_api_actor($s);
+    mobile_api_need_manager($actor);
+    $out = [];
+    foreach (ORM::for_table('tbl_users')->order_by_asc('username')->find_many() as $u) {
+        $self = (int) $u['id'] === (int) $actor['id'];
+        $out[] = [
+            'id' => (int) $u['id'],
+            'username' => $u['username'],
+            'fullname' => $u['fullname'],
+            'phone' => $u['phone'],
+            'email' => $u['email'],
+            'role' => $u['user_type'],
+            'status' => $u['status'],
+            'last_login' => isset($u['last_login']) ? (string) $u['last_login'] : '',
+            'self' => $self,
+            'can_edit' => $self || mobile_api_can_manage($actor, $u['user_type']),
+        ];
+    }
+    mobile_api_out(['ok' => true, 'users' => $out, 'roles' => mobile_api_assignable_roles($actor)]);
+}
+
+function mobile_api_user_save($s)
+{
+    $actor = mobile_api_actor($s);
+    mobile_api_need_manager($actor);
+
+    $id = (int) mobile_api_in('id', 0);
+    $fullname = trim((string) mobile_api_in('fullname'));
+    $phone = trim((string) mobile_api_in('phone'));
+    $email = trim((string) mobile_api_in('email'));
+    $password = (string) mobile_api_in('password');
+    $roleIn = trim((string) mobile_api_in('role'));
+    $status = mobile_api_in('status') === 'Inactive' ? 'Inactive' : 'Active';
+
+    if ($fullname === '') {
+        mobile_api_fail('Full name is required', 422);
+    }
+    if ($password !== '' && strlen($password) < 6) {
+        mobile_api_fail('Password must be at least 6 characters', 422);
+    }
+
+    if ($id > 0) {
+        $u = ORM::for_table('tbl_users')->find_one($id);
+        if (!$u) {
+            mobile_api_fail('User not found', 404);
+        }
+        $self = $id === (int) $actor['id'];
+        if (!$self && !mobile_api_can_manage($actor, $u['user_type'])) {
+            mobile_api_fail('You cannot edit this user', 403);
+        }
+        if ($self) {
+            // own role and status are never changed from the app
+            $roleIn = $u['user_type'];
+            $status = $u['status'];
+        } else {
+            if (!in_array($roleIn, mobile_api_all_roles(), true)) {
+                mobile_api_fail('Invalid role', 422);
+            }
+            if (!mobile_api_can_manage($actor, $roleIn)) {
+                mobile_api_fail('You cannot assign that role', 403);
+            }
+            if (strtolower($u['user_type']) === 'superadmin'
+                && (strtolower($roleIn) !== 'superadmin' || $status !== 'Active')
+                && mobile_api_other_active_supers($id) === 0) {
+                mobile_api_fail('You cannot remove the last active SuperAdmin', 403);
+            }
+        }
+        $changedAccess = $roleIn !== $u['user_type'] || $status !== $u['status'] || $password !== '';
+    } else {
+        $username = trim((string) mobile_api_in('username'));
+        if (!preg_match('/^[A-Za-z0-9_.@-]{3,}$/', $username)) {
+            mobile_api_fail('Username: at least 3 letters, numbers or . _ - @', 422);
+        }
+        if (strlen($password) < 6) {
+            mobile_api_fail('Password must be at least 6 characters', 422);
+        }
+        if (!in_array($roleIn, mobile_api_all_roles(), true)) {
+            mobile_api_fail('Invalid role', 422);
+        }
+        if (!mobile_api_can_manage($actor, $roleIn)) {
+            mobile_api_fail('You cannot assign that role', 403);
+        }
+        if (ORM::for_table('tbl_users')->where('username', $username)->find_one()
+            || ORM::for_table('tbl_customers')->where('username', $username)->find_one()) {
+            mobile_api_fail('That username is already taken', 409);
+        }
+        $u = ORM::for_table('tbl_users')->create();
+        $u->username = $username;
+        $changedAccess = false;
+    }
+
+    $u->fullname = $fullname;
+    $u->phone = $phone;
+    $u->email = $email;
+    $u->user_type = $roleIn;
+    $u->status = $status;
+    if ($password !== '') {
+        $u->password = mobile_api_hash_pw($password);
+    }
+
+    if ($id === 0) {
+        $u->creationdate = date('Y-m-d H:i:s');
+        // fill any other NOT NULL columns so strict MySQL accepts the insert
+        $data = $u->as_array();
+        foreach (ORM::get_db()->query('SHOW COLUMNS FROM tbl_users')->fetchAll(PDO::FETCH_ASSOC) as $c) {
+            $f = $c['Field'];
+            if ($c['Null'] === 'NO' && $c['Default'] === null && strpos($c['Extra'], 'auto_increment') === false
+                && !array_key_exists($f, $data)) {
+                if (stripos($c['Type'], 'int') !== false) {
+                    $u->set($f, 0);
+                } elseif (stripos($c['Type'], 'date') !== false || stripos($c['Type'], 'timestamp') !== false) {
+                    $u->set($f, date('Y-m-d H:i:s'));
+                } else {
+                    $u->set($f, '');
+                }
+            }
+        }
+    }
+    $u->save();
+
+    if ($changedAccess) {
+        mobile_api_revoke_staff_tokens((int) $u['id']);
+    }
+    mobile_api_out(['ok' => true, 'id' => (int) $u['id'], 'message' => $id > 0 ? 'User updated' : 'User added']);
+}
+
+function mobile_api_user_delete($s)
+{
+    $actor = mobile_api_actor($s);
+    mobile_api_need_manager($actor);
+    $id = (int) mobile_api_in('id');
+    $u = ORM::for_table('tbl_users')->find_one($id);
+    if (!$u) {
+        mobile_api_fail('User not found', 404);
+    }
+    if ($id === (int) $actor['id']) {
+        mobile_api_fail('You cannot delete your own account', 403);
+    }
+    if (!mobile_api_can_manage($actor, $u['user_type'])) {
+        mobile_api_fail('You cannot delete this user', 403);
+    }
+    if (strtolower($u['user_type']) === 'superadmin' && mobile_api_other_active_supers($id) === 0) {
+        mobile_api_fail('You cannot delete the last active SuperAdmin', 403);
+    }
+    mobile_api_revoke_staff_tokens($id);
+    $u->delete();
+    mobile_api_out(['ok' => true, 'message' => 'User deleted']);
 }

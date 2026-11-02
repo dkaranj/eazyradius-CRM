@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -89,7 +90,10 @@ private data class Tab(val title: String, val icon: ImageVector)
 @Composable
 fun RoleShell(auth: Auth, onLogout: () -> Unit) {
     val tabs = when (auth.role) {
-        "admin" -> listOf(Tab("Dashboard", Icons.Default.Home), Tab("Customers", Icons.Default.Person), Tab("Payments", Icons.Default.List))
+        "admin" -> {
+            val base = listOf(Tab("Dashboard", Icons.Default.Home), Tab("Customers", Icons.Default.Person), Tab("Payments", Icons.Default.List))
+            if (auth.userType.lowercase() in listOf("superadmin", "admin")) base + Tab("Users", Icons.Default.Settings) else base
+        }
         "technician" -> listOf(Tab("Jobs", Icons.Default.Build))
         else -> listOf(Tab("Home", Icons.Default.Home), Tab("Plans", Icons.Default.ShoppingCart), Tab("History", Icons.Default.List))
     }
@@ -134,10 +138,11 @@ fun RoleShell(auth: Auth, onLogout: () -> Unit) {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             when (auth.role) {
-                "admin" -> when (tab) {
-                    0 -> AdminDashboard(reload)
-                    1 -> AdminCustomers(reload)
-                    else -> AdminPayments(reload)
+                "admin" -> when (tabs.getOrNull(tab)?.title) {
+                    "Customers" -> AdminCustomers(reload)
+                    "Payments" -> AdminPayments(reload)
+                    "Users" -> AdminUsers(reload)
+                    else -> AdminDashboard(reload)
                 }
                 "technician" -> TechJobs(reload)
                 else -> when (tab) {

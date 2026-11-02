@@ -12,7 +12,7 @@ import java.net.URLEncoder
 
 class ApiException(message: String, val code: Int) : Exception(message)
 
-data class Auth(val base: String, val token: String, val role: String, val name: String)
+data class Auth(val base: String, val token: String, val role: String, val name: String, val userType: String = "")
 
 object Api {
     var base: String = ""
@@ -79,7 +79,8 @@ object Store {
             prefs.getString("base", "") ?: "",
             t,
             prefs.getString("role", "") ?: "",
-            prefs.getString("name", "") ?: ""
+            prefs.getString("name", "") ?: "",
+            prefs.getString("utype", "") ?: ""
         )
     }
 
@@ -89,11 +90,12 @@ object Store {
             .putString("token", a.token)
             .putString("role", a.role)
             .putString("name", a.name)
+            .putString("utype", a.userType)
             .apply()
     }
 
     fun clear() {
-        prefs.edit().remove("token").remove("role").remove("name").apply()
+        prefs.edit().remove("token").remove("role").remove("name").remove("utype").apply()
     }
 }
 

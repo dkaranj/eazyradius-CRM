@@ -58,7 +58,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
                     "login",
                     mapOf("username" to user.trim(), "password" to pass, "mode" to if (asTech) "technician" else "")
                 )
-                onLoggedIn(Auth(base, r.getString("token"), r.getString("role"), r.optString("name")))
+                onLoggedIn(Auth(base, r.getString("token"), r.getString("role"), r.optString("name"), r.optString("user_type")))
             } catch (e: Exception) {
                 error = e.message ?: "Login failed"
             } finally {
@@ -72,7 +72,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("NuxBill", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text("Eazyradius CRM", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         Text("Admin · Technician · Client", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(28.dp))
         OutlinedTextField(

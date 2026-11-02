@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "NuxBill"
+rootProject.name = "EazyradiusCRM"
 include(":app")

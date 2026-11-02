@@ -8,7 +8,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.duntech.nuxbill"
+        applicationId = "com.duntech.eazyradius"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
