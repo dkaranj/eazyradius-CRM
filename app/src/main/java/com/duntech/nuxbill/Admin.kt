@@ -49,27 +49,7 @@ import org.json.JSONObject
 @Composable
 fun AdminDashboard(reload: Int) {
     Remote(reload, load = { Api.call("admin_dashboard") }) { j ->
-        val cards = j.optJSONArray("cards").list()
-        val recent = j.optJSONArray("recent").list()
-        LazyVerticalGrid(
-            GridCells.Adaptive(160.dp),
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(cards) { c ->
-                StatCard(c.optString("label"), c.optString("value"), c.optString("tone"))
-            }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    "Recent payments",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
-            items(recent, span = { GridItemSpan(maxLineSpan) }) { t -> TxRow(t) }
-        }
+        OverviewGrid(j, j.optJSONArray("recent").list())
     }
 }
 

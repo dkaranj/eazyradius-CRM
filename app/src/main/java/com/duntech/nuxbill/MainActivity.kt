@@ -91,10 +91,13 @@ private data class Tab(val title: String, val icon: ImageVector)
 fun RoleShell(auth: Auth, onLogout: () -> Unit) {
     val tabs = when (auth.role) {
         "admin" -> {
-            val base = listOf(Tab("Dashboard", Icons.Default.Home), Tab("Customers", Icons.Default.Person), Tab("Payments", Icons.Default.List))
+            val base = listOf(
+                Tab("Dashboard", Icons.Default.Home), Tab("Customers", Icons.Default.Person),
+                Tab("Work", Icons.Default.Build), Tab("Payments", Icons.Default.List)
+            )
             if (auth.userType.lowercase() in listOf("superadmin", "admin")) base + Tab("Users", Icons.Default.Settings) else base
         }
-        "technician" -> listOf(Tab("Jobs", Icons.Default.Build))
+        "technician" -> listOf(Tab("Home", Icons.Default.Home), Tab("Work", Icons.Default.Build))
         else -> listOf(Tab("Home", Icons.Default.Home), Tab("Plans", Icons.Default.ShoppingCart), Tab("History", Icons.Default.List))
     }
     val roleLabel = when (auth.role) {
@@ -140,11 +143,15 @@ fun RoleShell(auth: Auth, onLogout: () -> Unit) {
             when (auth.role) {
                 "admin" -> when (tabs.getOrNull(tab)?.title) {
                     "Customers" -> AdminCustomers(reload)
+                    "Work" -> OpsWork(reload)
                     "Payments" -> AdminPayments(reload)
                     "Users" -> AdminUsers(reload)
                     else -> AdminDashboard(reload)
                 }
-                "technician" -> TechJobs(reload)
+                "technician" -> when (tabs.getOrNull(tab)?.title) {
+                    "Work" -> OpsWork(reload)
+                    else -> TechHome(reload)
+                }
                 else -> when (tab) {
                     0 -> ClientHome(reload)
                     1 -> ClientPlans(reload)

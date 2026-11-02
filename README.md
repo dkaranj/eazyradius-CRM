@@ -4,8 +4,8 @@ Native Android app (Kotlin + Jetpack Compose, no WebView) for PHPNuxBill with th
 
 | Role | Who | Screens |
 |------|-----|---------|
-| Admin | `tbl_users` (Admin, SuperAdmin, Agent, Sales...) | Dashboard stat grid, customer search + recharge, payments, **Users** tab (SuperAdmin/Admin) |
-| Technician | `tbl_users` whose `user_type` is in `mobile_api_tech_types` (default `Technician,Tech`), or any Admin using the "technician view" switch | Installation jobs grid, call / navigate, status updates |
+| Admin | `tbl_users` (Admin, SuperAdmin, Agent, Sales...) | Dashboard (money + open leads, tickets, installs, unassigned work), customer search + recharge, **Work** tab (leads, support, installs, assign to technicians), payments, **Users** tab (SuperAdmin/Admin) |
+| Technician | `tbl_users` whose `user_type` is in `mobile_api_tech_types` (default `Technician,Tech`), or any Admin using the "technician view" switch | Home (my open leads / tickets / installs) and Work tab with only the items assigned to them |
 | Client | `tbl_customers` | Wallet + active plan, plans grid (buy with wallet), payment history |
 
 The role is detected automatically at login.
@@ -42,3 +42,19 @@ Open the app, enter your panel address (e.g. `billing.example.com`), username an
 - **Admin** can do the same for non-admin roles only.
 - Nobody can change their own role/status or delete themselves, and the last active SuperAdmin cannot be removed or demoted.
 - Changing a user's role, status or password signs them out of the app so the change takes effect immediately.
+
+## Work: leads, support tickets, installations
+
+The Work tab (admin) and Home/Work tabs (technician) cover three lists. Admins see everything, can
+filter by status or technician, add leads/tickets, and **assign** any item to a technician. Technicians
+only see items assigned to them and can call, navigate and change status.
+
+The plugin auto-detects your existing tables (`tbl_leads`, `tbl_tickets`, `tbl_installations`, ...) and
+their column names. If a leads/tickets table does not exist it creates `tbl_mobile_leads` /
+`tbl_mobile_tickets`. Override detection with `tbl_appconfig` rows:
+
+- `mobile_api_table_lead`, `mobile_api_table_ticket`, `mobile_api_table_install`  (table names)
+- `mobile_api_statuses_lead`, `mobile_api_statuses_ticket`  (comma separated, first = default for new items)
+
+Installations cannot be created or completed from the app, so the Installations plugin's M-Pesa payment gate stays in charge.
+Assignment needs an assignee column (`assigned_to`, `technician_id`, ...); if a table has none the app says so.

@@ -68,13 +68,19 @@ function mobile_api()
                 mobile_api_need($role, ['admin']);
                 mobile_api_user_delete($s);
 
-            // ---- technician ----
-            case 'tech_jobs':
-                mobile_api_need($role, ['technician', 'admin']);
-                mobile_api_tech_jobs($s);
-            case 'tech_update':
-                mobile_api_need($role, ['technician', 'admin']);
-                mobile_api_tech_update($s);
+            // ---- work: leads, tickets, installations ----
+            case 'ops_list':
+                mobile_api_need($role, ['admin', 'technician']);
+                mobile_api_ops_list($s);
+            case 'ops_update':
+                mobile_api_need($role, ['admin', 'technician']);
+                mobile_api_ops_update($s);
+            case 'ops_create':
+                mobile_api_need($role, ['admin', 'technician']);
+                mobile_api_ops_create($s);
+            case 'tech_dashboard':
+                mobile_api_need($role, ['technician']);
+                mobile_api_out(['ok' => true] + mobile_api_ops_overview($s['user_id']));
 
             // ---- client ----
             case 'client_home':
@@ -303,7 +309,10 @@ function mobile_api_admin_dashboard()
         return $out;
     }, []);
 
-    mobile_api_out(['ok' => true, 'cards' => $cards, 'recent' => $recent]);
+    $ops = mobile_api_safe(function () { return mobile_api_ops_overview(null); }, ['cards' => [], 'work' => new stdClass()]);
+    $cards = array_merge(array_slice($cards, 0, 2), $ops['cards'], array_slice($cards, 2));
+
+    mobile_api_out(['ok' => true, 'cards' => $cards, 'recent' => $recent, 'work' => $ops['work']]);
 }
 
 function mobile_api_admin_customers()
@@ -439,98 +448,467 @@ function mobile_api_transactions($username)
 }
 
 /* ------------------------------------------------------------------ */
-/* technician (reads the Installations plugin table)                   */
+/* work: leads, support tickets, installations (assignable to techs)   */
 /* ------------------------------------------------------------------ */
-
-function mobile_api_install_table()
-{
-    foreach (['tbl_installations', 'installations'] as $t) {
-        $r = ORM::get_db()->query("SHOW TABLES LIKE '" . $t . "'")->fetch();
-        if ($r) {
-            return $t;
-        }
-    }
-    return null;
-}
-
-function mobile_api_pick($row, $keys)
-{
-    foreach ($keys as $k) {
-        if (isset($row[$k]) && $row[$k] !== '' && $row[$k] !== null) {
-            return (string) $row[$k];
-        }
-    }
-    return '';
-}
+/*
+ * Existing tables are detected (tbl_leads, tbl_tickets, tbl_installations ...). Override with
+ * $config['mobile_api_table_lead' | '_ticket' | '_install']. If no leads/tickets table exists
+ * the plugin creates tbl_mobile_leads / tbl_mobile_tickets. Installations are never created here.
+ */
 
 function mobile_api_tech_statuses()
 {
     global $config;
     $raw = isset($config['mobile_api_tech_statuses']) && $config['mobile_api_tech_statuses'] !== ''
         ? $config['mobile_api_tech_statuses'] : 'pending,in_progress';
-    return array_map('trim', explode(',', $raw));
+    return array_values(array_filter(array_map('trim', explode(',', $raw))));
 }
 
-function mobile_api_tech_jobs($s)
+function mobile_api_ops_closed()
 {
-    $table = mobile_api_install_table();
-    if (!$table) {
-        mobile_api_out(['ok' => true, 'jobs' => [], 'statuses' => [], 'note' => 'Installations table not found']);
-    }
-    $cols = [];
-    foreach (ORM::get_db()->query('SHOW COLUMNS FROM ' . $table)->fetchAll(PDO::FETCH_ASSOC) as $c) {
-        $cols[] = $c['Field'];
-    }
-    $orm = ORM::for_table($table)->order_by_desc('id');
+    return ['won', 'lost', 'closed', 'resolved', 'completed', 'complete', 'done', 'cancelled', 'canceled', 'converted', 'installed', 'rejected'];
+}
 
-    if ($s['role'] === 'technician') {
-        foreach (['technician_id', 'tech_id', 'assigned_to', 'assigned_to_id'] as $k) {
-            if (in_array($k, $cols, true)) {
-                $orm->where($k, $s['user_id']);
-                break;
+function mobile_api_ops_first($cols, $cands)
+{
+    foreach ($cands as $c) {
+        if (isset($cols[$c])) {
+            return $cols[$c]['Field'];
+        }
+    }
+    return null;
+}
+
+function mobile_api_ops_meta($entity)
+{
+    global $config;
+    static $cache = [];
+    if (array_key_exists($entity, $cache)) {
+        return $cache[$entity];
+    }
+    $names = [
+        'lead' => ['tbl_leads', 'leads', 'tbl_lead'],
+        'ticket' => ['tbl_tickets', 'tickets', 'tbl_support_tickets', 'support_tickets'],
+        'install' => ['tbl_installations', 'installations'],
+    ];
+    if (!isset($names[$entity])) {
+        return $cache[$entity] = null;
+    }
+    $cands = $names[$entity];
+    $ov = isset($config['mobile_api_table_' . $entity]) ? trim($config['mobile_api_table_' . $entity]) : '';
+    if ($ov !== '' && preg_match('/^[A-Za-z0-9_]+$/', $ov)) {
+        array_unshift($cands, $ov);
+    }
+    $table = null;
+    foreach ($cands as $t) {
+        if (ORM::get_db()->query("SHOW TABLES LIKE '" . $t . "'")->fetch()) {
+            $table = $t;
+            break;
+        }
+    }
+    $fallback = false;
+    if (!$table && $entity === 'lead') {
+        ORM::get_db()->exec("CREATE TABLE IF NOT EXISTS tbl_mobile_leads (
+            id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(191) NOT NULL, phone VARCHAR(40) NULL,
+            address VARCHAR(255) NULL, notes TEXT NULL, source VARCHAR(80) NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'new', assigned_to INT NULL,
+            created_at DATETIME NULL, updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $table = 'tbl_mobile_leads';
+        $fallback = true;
+    } elseif (!$table && $entity === 'ticket') {
+        ORM::get_db()->exec("CREATE TABLE IF NOT EXISTS tbl_mobile_tickets (
+            id INT AUTO_INCREMENT PRIMARY KEY, subject VARCHAR(191) NOT NULL, phone VARCHAR(40) NULL,
+            address VARCHAR(255) NULL, description TEXT NULL, priority VARCHAR(16) NOT NULL DEFAULT 'normal',
+            status VARCHAR(32) NOT NULL DEFAULT 'open', assigned_to INT NULL,
+            created_at DATETIME NULL, updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $table = 'tbl_mobile_tickets';
+        $fallback = true;
+    }
+    if (!$table) {
+        return $cache[$entity] = null;
+    }
+
+    $cols = [];
+    foreach (ORM::get_db()->query('SHOW COLUMNS FROM `' . $table . '`')->fetchAll(PDO::FETCH_ASSOC) as $c) {
+        $cols[strtolower($c['Field'])] = $c;
+    }
+
+    $cand = [
+        'title' => $entity === 'ticket'
+            ? ['subject', 'title', 'issue', 'customer_name', 'name', 'fullname', 'username']
+            : ($entity === 'lead'
+                ? ['name', 'fullname', 'lead_name', 'customer_name', 'client_name', 'title']
+                : ['customer_name', 'client_name', 'fullname', 'name', 'customer', 'username', 'title']),
+        'subtitle' => $entity === 'ticket'
+            ? ['description', 'message', 'category', 'issue']
+            : ($entity === 'lead'
+                ? ['package', 'plan', 'interest', 'source', 'location']
+                : ['package', 'plan', 'plan_name', 'service']),
+        'phone' => ['phone', 'phonenumber', 'mobile', 'customer_phone', 'msisdn', 'contact'],
+        'address' => ['address', 'location', 'site', 'area', 'estate'],
+        'status' => ['status', 'state', 'stage'],
+        'created' => ['created_at', 'created', 'creationdate', 'date', 'time'],
+        'updated' => ['updated_at', 'updated', 'modified_at'],
+        'priority' => ['priority', 'urgency'],
+        'notes' => ['notes', 'note', 'description', 'message', 'details'],
+        'assignee' => ['technician_id', 'tech_id', 'assigned_to', 'assigned_to_id', 'assigned_id', 'assignee_id', 'assigned_tech', 'technician', 'assigned_to_name'],
+    ];
+    $map = [];
+    foreach ($cand as $k => $list) {
+        $map[$k] = mobile_api_ops_first($cols, $list);
+    }
+    $assigneeInt = $map['assignee'] ? stripos($cols[strtolower($map['assignee'])]['Type'], 'int') !== false : false;
+
+    return $cache[$entity] = [
+        'entity' => $entity, 'table' => $table, 'cols' => $cols, 'map' => $map,
+        'assignee_int' => $assigneeInt, 'fallback' => $fallback,
+    ];
+}
+
+function mobile_api_ops_statuses($meta)
+{
+    global $config;
+    $e = $meta['entity'];
+    if ($e === 'install') {
+        return mobile_api_tech_statuses();
+    }
+    if (isset($config['mobile_api_statuses_' . $e]) && trim($config['mobile_api_statuses_' . $e]) !== '') {
+        return array_values(array_filter(array_map('trim', explode(',', $config['mobile_api_statuses_' . $e]))));
+    }
+    $defaults = $e === 'lead' ? ['new', 'contacted', 'qualified', 'won', 'lost'] : ['open', 'in_progress', 'resolved', 'closed'];
+    $sc = $meta['map']['status'];
+    if (!$sc || $meta['fallback']) {
+        return $defaults;
+    }
+    $type = $meta['cols'][strtolower($sc)]['Type'];
+    if (stripos($type, 'enum(') === 0 && preg_match_all("/'((?:[^']|'')*)'/", $type, $m)) {
+        return array_map(function ($v) { return str_replace("''", "'", $v); }, $m[1]);
+    }
+    $vals = [];
+    foreach (ORM::get_db()->query('SELECT DISTINCT `' . $sc . '` AS v FROM `' . $meta['table'] . '` LIMIT 20')->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        if ($r['v'] !== null && $r['v'] !== '') {
+            $vals[] = (string) $r['v'];
+        }
+    }
+    return $vals ? $vals : $defaults;
+}
+
+function mobile_api_user_names()
+{
+    static $names = null;
+    if ($names === null) {
+        $names = [];
+        foreach (ORM::for_table('tbl_users')->find_many() as $u) {
+            $names[(int) $u['id']] = $u['fullname'] ?: $u['username'];
+        }
+    }
+    return $names;
+}
+
+function mobile_api_ops_techs()
+{
+    $types = mobile_api_tech_types();
+    $out = [];
+    foreach (ORM::for_table('tbl_users')->order_by_asc('fullname')->find_many() as $u) {
+        if (in_array(strtolower((string) $u['user_type']), $types, true) && (!isset($u['status']) || $u['status'] === 'Active')) {
+            $out[] = ['id' => (int) $u['id'], 'name' => $u['fullname'] ?: $u['username']];
+        }
+    }
+    return $out;
+}
+
+function mobile_api_ops_item($meta, $a)
+{
+    $m = $meta['map'];
+    $g = function ($k) use ($m, $a) {
+        return ($m[$k] && isset($a[$m[$k]]) && $a[$m[$k]] !== null) ? trim((string) $a[$m[$k]]) : '';
+    };
+    $title = $g('title');
+    $sub = $g('subtitle');
+    $notes = $g('notes');
+    if ($notes === $sub || $notes === $title) {
+        $notes = '';
+    }
+    $aid = 0;
+    $aname = '';
+    if ($m['assignee'] && isset($a[$m['assignee']]) && $a[$m['assignee']] !== '' && $a[$m['assignee']] !== null) {
+        $raw = $a[$m['assignee']];
+        if ($meta['assignee_int']) {
+            $aid = (int) $raw;
+            if ($aid) {
+                $names = mobile_api_user_names();
+                $aname = isset($names[$aid]) ? $names[$aid] : '#' . $aid;
+            }
+        } else {
+            $aname = (string) $raw;
+        }
+    }
+    return [
+        'id' => (int) $a['id'],
+        'title' => $title !== '' ? $title : ('#' . $a['id']),
+        'subtitle' => $sub,
+        'notes' => $notes,
+        'phone' => $g('phone'),
+        'address' => $g('address'),
+        'status' => $g('status'),
+        'priority' => $g('priority'),
+        'created' => $g('created'),
+        'assignee_id' => $aid,
+        'assignee' => $aname,
+    ];
+}
+
+/** Restrict a query to items assigned to technician $uid (no-op if the table has no assignee column). */
+function mobile_api_ops_scope($orm, $meta, $uid)
+{
+    $c = $meta['map']['assignee'];
+    if (!$c) {
+        return $orm;
+    }
+    if ($meta['assignee_int']) {
+        return $orm->where($c, (int) $uid);
+    }
+    $u = ORM::for_table('tbl_users')->find_one($uid);
+    $full = $u ? (string) $u['fullname'] : '';
+    $user = $u ? (string) $u['username'] : '';
+    return $orm->where_raw('(`' . $c . '` = ? OR `' . $c . '` = ?)', [$full, $user]);
+}
+
+function mobile_api_ops_unassigned_sql($meta)
+{
+    $c = $meta['map']['assignee'];
+    if (!$c) {
+        return null;
+    }
+    return $meta['assignee_int'] ? "(`$c` IS NULL OR `$c` = 0)" : "(`$c` IS NULL OR `$c` = '')";
+}
+
+function mobile_api_ops_open_orm($meta, $scopeUid)
+{
+    $orm = ORM::for_table($meta['table']);
+    $sc = $meta['map']['status'];
+    if ($sc) {
+        $in = "'" . implode("','", mobile_api_ops_closed()) . "'";
+        $orm->where_raw('(`' . $sc . '` IS NULL OR LOWER(`' . $sc . '`) NOT IN (' . $in . '))');
+    }
+    if ($scopeUid) {
+        mobile_api_ops_scope($orm, $meta, $scopeUid);
+    }
+    return $orm;
+}
+
+/** Cards + latest open items for the dashboards. $scopeUid null = everything (admin). */
+function mobile_api_ops_overview($scopeUid)
+{
+    $labels = [
+        'lead' => [$scopeUid ? 'My leads' : 'Open leads', 'Leads needing attention'],
+        'ticket' => [$scopeUid ? 'My tickets' : 'Open tickets', 'Support tickets'],
+        'install' => [$scopeUid ? 'My installs' : 'Pending installs', 'Installations'],
+    ];
+    $cards = [];
+    $work = [];
+    $unassigned = 0;
+    foreach ($labels as $e => $l) {
+        $meta = mobile_api_ops_meta($e);
+        if (!$meta) {
+            continue;
+        }
+        $open = mobile_api_safe(function () use ($meta, $scopeUid) { return mobile_api_ops_open_orm($meta, $scopeUid)->count(); });
+        $cards[] = ['label' => $l[0], 'value' => (string) $open, 'tone' => $e === 'ticket' && $open > 0 ? 'bad' : 'info'];
+        if (!$scopeUid) {
+            $raw = mobile_api_ops_unassigned_sql($meta);
+            if ($raw) {
+                $unassigned += mobile_api_safe(function () use ($meta, $raw) {
+                    return mobile_api_ops_open_orm($meta, null)->where_raw($raw)->count();
+                });
+            }
+        }
+        $items = mobile_api_safe(function () use ($meta, $scopeUid) {
+            $out = [];
+            foreach (mobile_api_ops_open_orm($meta, $scopeUid)->order_by_desc('id')->limit(5)->find_many() as $r) {
+                $out[] = mobile_api_ops_item($meta, $r->as_array());
+            }
+            return $out;
+        }, []);
+        $work[$e] = ['label' => $l[1], 'items' => $items];
+    }
+    if (!$scopeUid && $cards) {
+        $cards[] = ['label' => 'Unassigned work', 'value' => (string) $unassigned, 'tone' => $unassigned > 0 ? 'bad' : 'good'];
+    }
+    return ['cards' => $cards, 'work' => $work ? $work : new stdClass()];
+}
+
+function mobile_api_ops_entity()
+{
+    $e = (string) mobile_api_in('entity');
+    if (!in_array($e, ['lead', 'ticket', 'install'], true)) {
+        mobile_api_fail('Unknown entity', 422);
+    }
+    return $e;
+}
+
+function mobile_api_ops_is_mine($meta, $a, $uid)
+{
+    $c = $meta['map']['assignee'];
+    if (!$c) {
+        return true;
+    }
+    $raw = isset($a[$c]) ? $a[$c] : '';
+    if ($meta['assignee_int']) {
+        return (int) $raw === (int) $uid;
+    }
+    $u = ORM::for_table('tbl_users')->find_one($uid);
+    return $u && $raw !== '' && (strcasecmp($raw, $u['fullname']) === 0 || strcasecmp($raw, $u['username']) === 0);
+}
+
+function mobile_api_ops_list($s)
+{
+    $e = mobile_api_ops_entity();
+    $meta = mobile_api_ops_meta($e);
+    $isAdmin = $s['role'] === 'admin';
+    if (!$meta) {
+        mobile_api_out(['ok' => true, 'items' => [], 'statuses' => [], 'techs' => [], 'can_create' => false,
+            'can_assign' => false, 'note' => 'No ' . $e . ' table found. Set mobile_api_table_' . $e . ' to its table name.']);
+    }
+    $orm = ORM::for_table($meta['table'])->order_by_desc('id');
+    if (!$isAdmin) {
+        mobile_api_ops_scope($orm, $meta, $s['user_id']);
+    }
+    $items = [];
+    foreach ($orm->limit(150)->find_many() as $r) {
+        $items[] = mobile_api_ops_item($meta, $r->as_array());
+    }
+    mobile_api_out([
+        'ok' => true,
+        'items' => $items,
+        'statuses' => mobile_api_ops_statuses($meta),
+        'techs' => $isAdmin ? mobile_api_ops_techs() : [],
+        'can_create' => $e !== 'install',
+        'can_assign' => $isAdmin && (bool) $meta['map']['assignee'],
+        'note' => $meta['map']['assignee'] ? '' : 'This table has no assignee column, so items cannot be assigned.',
+    ]);
+}
+
+function mobile_api_ops_set_assignee($row, $meta, $techId)
+{
+    $c = $meta['map']['assignee'];
+    if (!$c) {
+        mobile_api_fail('This table has no assignee column', 422);
+    }
+    if ($techId <= 0) {
+        $row->set($c, $meta['assignee_int'] ? null : '');
+        return;
+    }
+    $t = ORM::for_table('tbl_users')->find_one($techId);
+    if (!$t || !in_array(strtolower((string) $t['user_type']), mobile_api_tech_types(), true)) {
+        mobile_api_fail('Pick a technician', 422);
+    }
+    $row->set($c, $meta['assignee_int'] ? (int) $t['id'] : ($t['fullname'] ?: $t['username']));
+}
+
+function mobile_api_ops_update($s)
+{
+    $e = mobile_api_ops_entity();
+    $meta = mobile_api_ops_meta($e);
+    if (!$meta) {
+        mobile_api_fail('Table not found', 404);
+    }
+    $row = ORM::for_table($meta['table'])->find_one((int) mobile_api_in('id'));
+    if (!$row) {
+        mobile_api_fail('Item not found', 404);
+    }
+    $isAdmin = $s['role'] === 'admin';
+    if (!$isAdmin && !mobile_api_ops_is_mine($meta, $row->as_array(), $s['user_id'])) {
+        mobile_api_fail('This item is not assigned to you', 403);
+    }
+
+    $status = trim((string) mobile_api_in('status'));
+    if ($status !== '') {
+        // Completing an installation stays in the Installations plugin so its M-Pesa payment gate is never bypassed.
+        if (!in_array($status, mobile_api_ops_statuses($meta), true)) {
+            mobile_api_fail($e === 'install'
+                ? 'That status can only be set from the Installations plugin'
+                : 'Invalid status', 403);
+        }
+        if (!$meta['map']['status']) {
+            mobile_api_fail('This table has no status column', 422);
+        }
+        $row->set($meta['map']['status'], $status);
+    }
+
+    $assign = mobile_api_in('assignee_id', null);
+    if ($assign !== null && $assign !== '' || mobile_api_in('unassign') === '1') {
+        if (!$isAdmin) {
+            mobile_api_fail('Only admins can assign work', 403);
+        }
+        mobile_api_ops_set_assignee($row, $meta, mobile_api_in('unassign') === '1' ? 0 : (int) $assign);
+    }
+    if ($meta['map']['updated']) {
+        $row->set($meta['map']['updated'], date('Y-m-d H:i:s'));
+    }
+    $row->save();
+    mobile_api_out(['ok' => true]);
+}
+
+function mobile_api_ops_create($s)
+{
+    $e = mobile_api_ops_entity();
+    if ($e === 'install') {
+        mobile_api_fail('Create installations from the Installations plugin', 403);
+    }
+    $meta = mobile_api_ops_meta($e);
+    if (!$meta) {
+        mobile_api_fail('Table not found', 404);
+    }
+    $m = $meta['map'];
+    $title = trim((string) mobile_api_in('title'));
+    if ($title === '' || !$m['title']) {
+        mobile_api_fail($e === 'lead' ? 'Enter the lead name' : 'Enter the ticket subject', 422);
+    }
+    $r = ORM::for_table($meta['table'])->create();
+    $r->set($m['title'], $title);
+    $phone = trim((string) mobile_api_in('phone'));
+    $address = trim((string) mobile_api_in('address'));
+    $notes = trim((string) mobile_api_in('notes'));
+    if ($m['phone'] && $phone !== '') $r->set($m['phone'], $phone);
+    if ($m['address'] && $address !== '') $r->set($m['address'], $address);
+    if ($m['notes'] && $notes !== '' && $m['notes'] !== $m['title']) $r->set($m['notes'], $notes);
+    if ($m['status']) {
+        $st = mobile_api_ops_statuses($meta);
+        $r->set($m['status'], $st ? $st[0] : ($e === 'lead' ? 'new' : 'open'));
+    }
+    $prio = trim((string) mobile_api_in('priority'));
+    if ($m['priority'] && $prio !== '' && ($meta['fallback'] || stripos($meta['cols'][strtolower($m['priority'])]['Type'], 'char') !== false)) {
+        $r->set($m['priority'], $prio);
+    }
+    $now = date('Y-m-d H:i:s');
+    if ($m['created']) $r->set($m['created'], $now);
+    if ($m['updated']) $r->set($m['updated'], $now);
+
+    if ($m['assignee']) {
+        $assign = $s['role'] === 'admin' ? (int) mobile_api_in('assignee_id', 0) : (int) $s['user_id'];
+        if ($assign > 0) {
+            mobile_api_ops_set_assignee($r, $meta, $assign);
+        }
+    }
+
+    // fill any other NOT NULL columns so strict MySQL accepts the insert
+    $data = $r->as_array();
+    foreach ($meta['cols'] as $c) {
+        $f = $c['Field'];
+        if ($c['Null'] === 'NO' && $c['Default'] === null && strpos($c['Extra'], 'auto_increment') === false
+            && !array_key_exists($f, $data)) {
+            if (stripos($c['Type'], 'int') !== false) {
+                $r->set($f, 0);
+            } elseif (stripos($c['Type'], 'date') !== false || stripos($c['Type'], 'timestamp') !== false) {
+                $r->set($f, $now);
+            } else {
+                $r->set($f, '');
             }
         }
     }
-    $status = trim((string) mobile_api_in('status'));
-    if ($status !== '' && in_array('status', $cols, true)) {
-        $orm->where('status', $status);
-    }
-
-    $jobs = [];
-    foreach ($orm->limit(100)->find_many() as $r) {
-        $row = $r->as_array();
-        $jobs[] = [
-            'id' => (int) $row['id'],
-            'title' => mobile_api_pick($row, ['customer_name', 'client_name', 'fullname', 'name', 'customer', 'username', 'title']),
-            'subtitle' => mobile_api_pick($row, ['package', 'plan', 'plan_name', 'service', 'area', 'notes']),
-            'phone' => mobile_api_pick($row, ['phone', 'phonenumber', 'mobile', 'customer_phone']),
-            'address' => mobile_api_pick($row, ['address', 'location', 'site', 'area']),
-            'status' => mobile_api_pick($row, ['status']),
-            'created' => mobile_api_pick($row, ['created_at', 'date', 'created']),
-        ];
-    }
-    mobile_api_out(['ok' => true, 'jobs' => $jobs, 'statuses' => mobile_api_tech_statuses()]);
-}
-
-function mobile_api_tech_update($s)
-{
-    $table = mobile_api_install_table();
-    if (!$table) {
-        mobile_api_fail('Installations table not found', 404);
-    }
-    $id = (int) mobile_api_in('id');
-    $status = trim((string) mobile_api_in('status'));
-    // Completion stays inside the Installations plugin so its M-Pesa payment gate is never bypassed.
-    if (!in_array($status, mobile_api_tech_statuses(), true)) {
-        mobile_api_fail('That status can only be set from the Installations plugin', 403);
-    }
-    $row = ORM::for_table($table)->find_one($id);
-    if (!$row) {
-        mobile_api_fail('Job not found', 404);
-    }
-    $row->status = $status;
-    $row->save();
-    mobile_api_out(['ok' => true]);
+    $r->save();
+    mobile_api_out(['ok' => true, 'id' => (int) $r['id'], 'message' => $e === 'lead' ? 'Lead added' : 'Ticket created']);
 }
 
 /* ------------------------------------------------------------------ */
