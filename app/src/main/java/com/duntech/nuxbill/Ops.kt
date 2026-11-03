@@ -137,7 +137,7 @@ fun OpsWork(reload: Int) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun OpsList(entity: String, reload: Int) {
+fun OpsList(entity: String, reload: Int) {
     var bump by remember { mutableIntStateOf(0) }
     var statusFilter by rememberSaveable(entity) { mutableStateOf("") }
     var techFilter by rememberSaveable(entity) { mutableStateOf("") }

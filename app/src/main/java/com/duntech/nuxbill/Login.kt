@@ -2,7 +2,6 @@ package com.duntech.nuxbill
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,7 +13,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,7 +33,6 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
     var url by rememberSaveable { mutableStateOf(Store.lastUrl()) }
     var user by rememberSaveable { mutableStateOf("") }
     var pass by rememberSaveable { mutableStateOf("") }
-    var asTech by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -54,11 +51,11 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
             try {
                 Api.base = base
                 Api.token = ""
-                val r = Api.call(
-                    "login",
-                    mapOf("username" to user.trim(), "password" to pass, "mode" to if (asTech) "technician" else "")
+                val r = Api.call("login", mapOf("username" to user.trim(), "password" to pass))
+                onLoggedIn(
+                    Auth(base, r.getString("token"), r.getString("role"), r.optString("name"), r.optString("user_type"))
+                        .withAccess(r.optJSONObject("access"))
                 )
-                onLoggedIn(Auth(base, r.getString("token"), r.getString("role"), r.optString("name"), r.optString("user_type")))
             } catch (e: Exception) {
                 error = e.message ?: "Login failed"
             } finally {
@@ -73,7 +70,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("Eazyradius CRM", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Text("Admin · Technician · Client", style = MaterialTheme.typography.bodyMedium)
+        Text("Staff and customers sign in here", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(28.dp))
         OutlinedTextField(
             value = url, onValueChange = { url = it }, singleLine = true,
@@ -92,10 +89,6 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Staff: open technician view", style = MaterialTheme.typography.bodyMedium)
-            Switch(checked = asTech, onCheckedChange = { asTech = it })
-        }
         if (error.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(error, color = MaterialTheme.colorScheme.error)

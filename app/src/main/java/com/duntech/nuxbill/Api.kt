@@ -12,12 +12,40 @@ import java.net.URLEncoder
 
 class ApiException(message: String, val code: Int) : Exception(message)
 
-data class Auth(val base: String, val token: String, val role: String, val name: String, val userType: String = "")
+data class Auth(
+    val base: String,
+    val token: String,
+    val role: String,
+    val name: String,
+    val userType: String = "",
+    val modules: List<String> = emptyList(),
+    val scopeAll: Boolean = false,
+    val canAssign: Boolean = false,
+    val canCreate: Boolean = false,
+    val isSuper: Boolean = false,
+    val isTech: Boolean = false
+)
+
+/** Applies the "access" block the server returns from login / me. */
+fun Auth.withAccess(a: JSONObject?, userType: String? = null): Auth {
+    if (a == null) return this
+    return copy(
+        userType = userType ?: this.userType,
+        modules = a.optJSONArray("modules").strings(),
+        scopeAll = a.optString("scope") == "all",
+        canAssign = a.optBoolean("assign"),
+        canCreate = a.optBoolean("create"),
+        isSuper = a.optBoolean("super"),
+        isTech = a.optBoolean("is_tech")
+    )
+}
 
 object Api {
     var base: String = ""
     var token: String = ""
     var onUnauthorized: (() -> Unit)? = null
+    /** Modules the signed-in user may open; lets screens hide fields the server would refuse anyway. */
+    var modules: List<String> = emptyList()
 
     suspend fun call(action: String, params: Map<String, String> = emptyMap()): JSONObject =
         withContext(Dispatchers.IO) {
@@ -75,12 +103,19 @@ object Store {
     fun load(): Auth? {
         val t = prefs.getString("token", "") ?: ""
         if (t.isEmpty()) return null
+        val mods = (prefs.getString("modules", "") ?: "").split(",").filter { it.isNotBlank() }
         return Auth(
             prefs.getString("base", "") ?: "",
             t,
             prefs.getString("role", "") ?: "",
             prefs.getString("name", "") ?: "",
-            prefs.getString("utype", "") ?: ""
+            prefs.getString("utype", "") ?: "",
+            mods,
+            prefs.getBoolean("scope_all", false),
+            prefs.getBoolean("can_assign", false),
+            prefs.getBoolean("can_create", false),
+            prefs.getBoolean("is_super", false),
+            prefs.getBoolean("is_tech", false)
         )
     }
 
@@ -91,11 +126,19 @@ object Store {
             .putString("role", a.role)
             .putString("name", a.name)
             .putString("utype", a.userType)
+            .putString("modules", a.modules.joinToString(","))
+            .putBoolean("scope_all", a.scopeAll)
+            .putBoolean("can_assign", a.canAssign)
+            .putBoolean("can_create", a.canCreate)
+            .putBoolean("is_super", a.isSuper)
+            .putBoolean("is_tech", a.isTech)
             .apply()
     }
 
     fun clear() {
-        prefs.edit().remove("token").remove("role").remove("name").remove("utype").apply()
+        prefs.edit().remove("token").remove("role").remove("name").remove("utype")
+            .remove("modules").remove("scope_all").remove("can_assign").remove("can_create")
+            .remove("is_super").remove("is_tech").apply()
     }
 }
 

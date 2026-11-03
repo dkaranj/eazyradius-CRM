@@ -54,7 +54,8 @@ fun AdminUsers(reload: Int) {
 
     Remote(listOf(reload, bump), load = { Api.call("admin_users") }) { j ->
         val users = j.optJSONArray("users").list()
-        val roles = j.optJSONArray("roles").strings()
+        val types = j.optJSONArray("roles").strings()
+        val staffRoles = j.optJSONArray("staff_roles").list()
 
         Column(Modifier.fillMaxSize()) {
             Button(
@@ -75,13 +76,13 @@ fun AdminUsers(reload: Int) {
         }
 
         if (adding) {
-            UserDialog(null, roles, onClose = { adding = false }) {
+            UserDialog(null, types, staffRoles, onClose = { adding = false }) {
                 adding = false
                 bump++
             }
         }
         editing?.let { u ->
-            UserDialog(u, roles, onClose = { editing = null }) {
+            UserDialog(u, types, staffRoles, onClose = { editing = null }) {
                 editing = null
                 bump++
             }
@@ -92,6 +93,7 @@ fun AdminUsers(reload: Int) {
 @Composable
 private fun UserCard(u: JSONObject, onClick: () -> Unit) {
     val active = u.optString("status") == "Active"
+    val roleNames = u.optJSONArray("staff_role_names").strings()
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -108,6 +110,8 @@ private fun UserCard(u: JSONObject, onClick: () -> Unit) {
             }
             Text(u.optString("username"), style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(6.dp))
+            KeyValue("Staff roles", roleNames.joinToString(", "))
+            KeyValue("Technician", if (u.optBoolean("is_tech")) "Yes" else "")
             KeyValue("Phone", u.optString("phone"))
             KeyValue("Email", u.optString("email"))
             KeyValue("Last login", u.optString("last_login"))
@@ -122,7 +126,13 @@ private fun UserCard(u: JSONObject, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UserDialog(user: JSONObject?, roles: List<String>, onClose: () -> Unit, onDone: () -> Unit) {
+private fun UserDialog(
+    user: JSONObject?,
+    types: List<String>,
+    staffRoles: List<JSONObject>,
+    onClose: () -> Unit,
+    onDone: () -> Unit
+) {
     val isNew = user == null
     val self = user?.optBoolean("self") ?: false
     val ctx = LocalContext.current
@@ -133,12 +143,16 @@ private fun UserDialog(user: JSONObject?, roles: List<String>, onClose: () -> Un
     var phone by remember { mutableStateOf(user?.optString("phone") ?: "") }
     var email by remember { mutableStateOf(user?.optString("email") ?: "") }
     var password by remember { mutableStateOf("") }
-    var role by remember { mutableStateOf(user?.optString("role") ?: roles.lastOrNull() ?: "") }
+    var type by remember { mutableStateOf(user?.optString("role") ?: types.lastOrNull() ?: "") }
+    var isTech by remember { mutableStateOf(user?.optBoolean("is_tech") ?: false) }
+    var roleIds by remember {
+        mutableStateOf(user?.optJSONArray("staff_role_ids")?.let { a -> (0 until a.length()).map { a.getInt(it) }.toSet() } ?: emptySet())
+    }
     var active by remember { mutableStateOf((user?.optString("status") ?: "Active") == "Active") }
     var confirmDelete by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 
-    val chips = (roles + listOfNotNull(user?.optString("role"))).filter { it.isNotBlank() }.distinct()
+    val typeChips = (types + listOfNotNull(user?.optString("role"))).filter { it.isNotBlank() }.distinct()
 
     AlertDialog(
         onDismissRequest = onClose,
@@ -163,16 +177,38 @@ private fun UserDialog(user: JSONObject?, roles: List<String>, onClose: () -> Un
                     label = { Text(if (isNew) "Password (min 6)" else "New password (leave blank to keep)") },
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth()
                 )
-                Text("Role", style = MaterialTheme.typography.labelLarge)
+
+                Text("Account type", style = MaterialTheme.typography.labelLarge)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(chips) { r ->
+                    items(typeChips) { r ->
                         FilterChip(
-                            selected = role == r,
-                            onClick = { if (!self) role = r },
+                            selected = type == r,
+                            onClick = { if (!self) type = r },
                             enabled = !self,
                             label = { Text(r) }
                         )
                     }
+                }
+
+                Text("Staff roles (decide what they see in the app)", style = MaterialTheme.typography.labelLarge)
+                if (staffRoles.isEmpty()) {
+                    Text("No staff roles exist yet. Create them in the web panel.", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(staffRoles) { r ->
+                            val id = r.optInt("id")
+                            FilterChip(
+                                selected = id in roleIds,
+                                onClick = { roleIds = if (id in roleIds) roleIds - id else roleIds + id },
+                                label = { Text(r.optString("name")) }
+                            )
+                        }
+                    }
+                }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Technician (can be assigned work)", Modifier.weight(1f))
+                    Switch(checked = isTech, onCheckedChange = { isTech = it })
                 }
                 if (!self) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
@@ -218,7 +254,9 @@ private fun UserDialog(user: JSONObject?, roles: List<String>, onClose: () -> Un
                                 "phone" to phone.trim(),
                                 "email" to email.trim(),
                                 "password" to password,
-                                "role" to role,
+                                "role" to type,
+                                "is_tech" to if (isTech) "1" else "0",
+                                "staff_roles" to roleIds.joinToString(","),
                                 "status" to if (active) "Active" else "Inactive"
                             )
                             val r = Api.call("admin_user_save", params)
