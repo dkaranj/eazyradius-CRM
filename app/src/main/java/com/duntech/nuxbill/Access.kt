@@ -66,7 +66,9 @@ fun AdminAccess(reload: Int) {
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
-                    "Choose what each role can see in the app. A person with several roles gets everything any of them allows. The SuperAdmin always sees everything.",
+                    "Choose what each role can see in the app. A person with several roles gets everything any of them allows. " +
+                        "User types (Sales, Agent, Report) only apply to people with no technician flag and no staff role. " +
+                        "Each card shows who it applies to right now. The SuperAdmin always sees everything.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -90,6 +92,8 @@ fun AdminAccess(reload: Int) {
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(8.dp))
+                        val who = r.optJSONArray("members").strings()
+                        KeyValue("Applies to", if (who.isEmpty()) "Nobody right now" else who.joinToString(", "))
                         KeyValue("Sees", if (r.optString("scope") == "all") "All items" else "Only items assigned to them")
                         KeyValue("Can assign work", if (r.optBoolean("assign")) "Yes" else "No")
                         KeyValue("Can add leads and tickets", if (r.optBoolean("create")) "Yes" else "No")

@@ -1014,6 +1014,14 @@ function mobile_api_ops_update($s)
         if (!$meta['map']['status']) {
             mobile_api_fail('This table has no status column', 422);
         }
+        $cur = strtolower(trim((string) $row[$meta['map']['status']]));
+        if ($e === 'install' && in_array($cur, ['completed', 'complete', 'cancelled', 'failed', 'awaiting_payment'], true)) {
+            // finished / payment-gated jobs are final here: the customer exists and the M-Pesa gate has run
+            mobile_api_fail('This installation is ' . str_replace('_', ' ', $cur) . '. Manage it in the Installations plugin.', 409);
+        }
+        if ($e === 'ticket' && $cur === 'closed' && empty($s['access']['assign'])) {
+            mobile_api_fail('Closed tickets can only be reopened by a manager', 403);
+        }
         $row->set($meta['map']['status'], $status);
         if ($e === 'install' && $status === 'in_progress' && isset($meta['cols']['started_at']) && empty($row['started_at'])) {
             $row->set('started_at', date('Y-m-d H:i:s'));
@@ -1576,6 +1584,25 @@ function mobile_api_access_rec($key, &$custom = null)
     return mobile_api_default_access($key);
 }
 
+/** Which access records apply to a user. Used both to enforce access and to show the admin who each role covers. */
+function mobile_api_user_role_keys($u)
+{
+    $uid = (int) $u['id'];
+    $keys = [];
+    if (mobile_api_is_tech($uid)) {
+        $keys[] = 'tech';
+    }
+    foreach (mobile_api_safe(function () use ($uid) {
+        return ORM::for_table('tbl_staff_user_roles')->where('user_id', $uid)->find_many();
+    }, []) as $r) {
+        $keys[] = 'role:' . (int) $r['role_id'];
+    }
+    if (!$keys || (string) $u['user_type'] === 'Admin') {
+        array_unshift($keys, 'type:' . $u['user_type']);
+    }
+    return $keys;
+}
+
 /**
  * Resolve what a staff member can use. SuperAdmin: everything. Everyone else gets the union of
  * their Technician flag and custom staff roles; accounts with neither (and all Admins) use their account type.
@@ -1593,18 +1620,7 @@ function mobile_api_access($uid)
         return ['modules' => mobile_api_catalog_keys(), 'scope' => 'all', 'assign' => true, 'create' => true,
             'super' => true, 'is_tech' => $isTech, 'user_type' => $type, 'name' => $name];
     }
-    $keys = [];
-    if ($isTech) {
-        $keys[] = 'tech';
-    }
-    foreach (mobile_api_safe(function () use ($uid) {
-        return ORM::for_table('tbl_staff_user_roles')->where('user_id', $uid)->find_many();
-    }, []) as $r) {
-        $keys[] = 'role:' . (int) $r['role_id'];
-    }
-    if (!$keys || $type === 'Admin') {
-        array_unshift($keys, 'type:' . $type);
-    }
+    $keys = mobile_api_user_role_keys($u);
     $mods = [];
     $all = false;
     $assign = false;
@@ -1650,13 +1666,22 @@ function mobile_api_access_keys()
 function mobile_api_access_get()
 {
     $roles = [];
+    $members = [];
+    foreach (mobile_api_safe(function () {
+        return ORM::for_table('tbl_users')->where('status', 'Active')->where_not_equal('user_type', 'SuperAdmin')->order_by_asc('fullname')->find_many();
+    }, []) as $u) {
+        foreach (mobile_api_user_role_keys($u) as $key) {
+            $members[$key][] = $u['fullname'] ?: $u['username'];
+        }
+    }
     foreach (mobile_api_access_keys() as $k) {
         $rec = mobile_api_access_rec($k[0], $custom);
         if (!$rec) {
             $rec = ['modules' => ['my_hr'], 'scope' => 'mine', 'assign' => false, 'create' => false];
         }
         $roles[] = ['key' => $k[0], 'label' => $k[1], 'kind' => $k[2], 'custom' => $custom,
-            'modules' => $rec['modules'], 'scope' => $rec['scope'], 'assign' => $rec['assign'], 'create' => $rec['create']];
+            'modules' => $rec['modules'], 'scope' => $rec['scope'], 'assign' => $rec['assign'], 'create' => $rec['create'],
+            'members' => isset($members[$k[0]]) ? $members[$k[0]] : []];
     }
     mobile_api_out(['ok' => true, 'catalog' => mobile_api_catalog(), 'roles' => $roles]);
 }
