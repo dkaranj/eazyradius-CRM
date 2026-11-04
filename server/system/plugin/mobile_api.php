@@ -192,29 +192,56 @@ function mobile_api_need($role, $allowed)
 function mobile_api_boot()
 {
     $db = ORM::get_db();
-    $db->exec("CREATE TABLE IF NOT EXISTS tbl_mobile_tokens (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        token_hash CHAR(64) NOT NULL,
-        role VARCHAR(16) NOT NULL,
-        user_id INT NOT NULL,
-        created_at DATETIME NOT NULL,
-        last_used DATETIME NULL,
-        UNIQUE KEY token_hash (token_hash)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    $db->exec("CREATE TABLE IF NOT EXISTS tbl_mobile_access (
-        role_key VARCHAR(64) NOT NULL PRIMARY KEY,
-        modules TEXT NOT NULL,
-        scope VARCHAR(8) NOT NULL DEFAULT 'mine',
-        can_assign TINYINT(1) NOT NULL DEFAULT 0,
-        can_create TINYINT(1) NOT NULL DEFAULT 0,
-        updated_by INT NULL,
-        updated_at DATETIME NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    $db->exec("CREATE TABLE IF NOT EXISTS tbl_mobile_lead_assign (
-        lead_id INT NOT NULL PRIMARY KEY,
-        user_id INT NOT NULL,
-        assigned_at DATETIME NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $defs = [
+        'tbl_mobile_tokens' => [
+            ['token_hash', 'role', 'user_id', 'created_at', 'last_used'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_tokens (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                token_hash CHAR(64) NOT NULL,
+                role VARCHAR(16) NOT NULL,
+                user_id INT NOT NULL,
+                created_at DATETIME NOT NULL,
+                last_used DATETIME NULL,
+                UNIQUE KEY token_hash (token_hash)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_access' => [
+            ['role_key', 'modules', 'scope', 'can_assign', 'can_create', 'updated_by', 'updated_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_access (
+                role_key VARCHAR(64) NOT NULL PRIMARY KEY,
+                modules TEXT NOT NULL,
+                scope VARCHAR(8) NOT NULL DEFAULT 'mine',
+                can_assign TINYINT(1) NOT NULL DEFAULT 0,
+                can_create TINYINT(1) NOT NULL DEFAULT 0,
+                updated_by INT NULL,
+                updated_at DATETIME NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_lead_assign' => [
+            ['lead_id', 'user_id', 'assigned_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_lead_assign (
+                lead_id INT NOT NULL PRIMARY KEY,
+                user_id INT NOT NULL,
+                assigned_at DATETIME NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+    ];
+
+    // One query: which columns do our tables really have? CREATE TABLE IF NOT EXISTS never fixes a table
+    // that already exists with a different shape (left by an older version or another tool).
+    $have = [];
+    $in = "'" . implode("','", array_keys($defs)) . "'";
+    foreach ($db->query("SELECT TABLE_NAME AS t, COLUMN_NAME AS c FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (" . $in . ")")->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $have[strtolower($r['t'])][] = strtolower($r['c']);
+    }
+    foreach ($defs as $table => $def) {
+        if (isset($have[$table]) && array_diff($def[0], $have[$table])) {
+            // keep the old data, just move it out of the way (these tables hold only app settings and sessions)
+            $db->exec('RENAME TABLE ' . $table . ' TO ' . $table . '_old_' . date('YmdHis'));
+        }
+        $db->exec($def[1]);
+    }
 }
 
 function mobile_api_tech_types()
