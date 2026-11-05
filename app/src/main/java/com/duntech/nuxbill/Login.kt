@@ -14,6 +14,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
     var user by rememberSaveable { mutableStateOf("") }
     var pass by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var showTheme by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
@@ -97,5 +99,8 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
         Button(onClick = { submit() }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             if (busy) CircularProgressIndicator(Modifier.height(20.dp), strokeWidth = 2.dp) else Text("Sign in")
         }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { showTheme = true }) { Text("Theme and colours") }
     }
+    if (showTheme) ThemeDialog { showTheme = false }
 }

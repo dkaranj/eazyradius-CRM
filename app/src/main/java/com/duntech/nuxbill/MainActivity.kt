@@ -1,9 +1,14 @@
 package com.duntech.nuxbill
 
+import android.content.res.Configuration
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -11,7 +16,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -32,7 +42,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
@@ -40,6 +52,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        ThemeState.init(this)
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        window.setBackgroundDrawable(ColorDrawable(resolveTheme(ThemeState.config, night).background.toArgb()))
         setContent {
             NuxTheme {
                 Surface(Modifier.fillMaxSize()) { App() }
@@ -105,6 +120,13 @@ fun App() {
     }
 }
 
+/** Text button that stays readable on whatever header colour the person picked. */
+@Composable
+private fun HeaderButton(text: String, onClick: () -> Unit) {
+    val r = LocalResolvedTheme.current
+    TextButton(onClick = onClick, colors = ButtonDefaults.textButtonColors(contentColor = r.headerText)) { Text(text) }
+}
+
 private data class NavTab(val key: String, val title: String)
 
 private fun staffTabs(a: Auth): List<NavTab> {
@@ -141,6 +163,8 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
     val idx = tab.coerceIn(0, tabs.lastIndex)
+    val r = LocalResolvedTheme.current
+    var showTheme by remember { mutableStateOf(false) }
 
     val roleLabel = when {
         isClient -> "Client"
@@ -154,31 +178,52 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
             Column {
                 TopAppBar(
                     title = { Text(roleLabel + if (auth.name.isNotBlank()) " · " + auth.name else "") },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = r.header,
+                        scrolledContainerColor = r.header,
+                        titleContentColor = r.headerText,
+                        actionIconContentColor = r.headerText
+                    ),
                     actions = {
-                        TextButton(onClick = {
+                        HeaderButton("Theme") { showTheme = true }
+                        HeaderButton("Refresh") {
                             scope.launch {
                                 if (!isClient) {
                                     try {
-                                        val r = Api.call("me")
-                                        onAuth(auth.withAccess(r.optJSONObject("access"), r.optString("user_type")))
+                                        val me = Api.call("me")
+                                        onAuth(auth.withAccess(me.optJSONObject("access"), me.optString("user_type")))
                                     } catch (e: Exception) {
                                     }
                                 }
                                 reload++
                             }
-                        }) { Text("Refresh") }
-                        TextButton(onClick = {
+                        }
+                        HeaderButton("Logout") {
                             scope.launch {
                                 try { Api.call("logout") } catch (e: Exception) { }
                                 onLogout()
                             }
-                        }) { Text("Logout") }
+                        }
                     }
                 )
                 if (!isClient && tabs.size > 1) {
-                    ScrollableTabRow(selectedTabIndex = idx, edgePadding = 8.dp) {
+                    ScrollableTabRow(
+                        selectedTabIndex = idx,
+                        edgePadding = 8.dp,
+                        containerColor = r.header,
+                        contentColor = r.headerText,
+                        indicator = { pos ->
+                            Box(Modifier.tabIndicatorOffset(pos[idx]).height(3.dp).background(r.headerText))
+                        }
+                    ) {
                         tabs.forEachIndexed { i, t ->
-                            Tab(selected = idx == i, onClick = { tab = i }, text = { Text(t.title) })
+                            Tab(
+                                selected = idx == i,
+                                onClick = { tab = i },
+                                selectedContentColor = r.headerText,
+                                unselectedContentColor = r.headerText.copy(alpha = 0.65f),
+                                text = { Text(t.title) }
+                            )
                         }
                     }
                 }
@@ -187,15 +232,30 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
         bottomBar = {
             if (isClient) {
                 val icons = listOf(Icons.Default.Home, Icons.Default.ShoppingCart, Icons.Default.List)
-                NavigationBar {
+                NavigationBar(containerColor = r.footer, contentColor = r.footerText) {
                     tabs.forEachIndexed { i, t ->
                         NavigationBarItem(
                             selected = idx == i,
                             onClick = { tab = i },
                             icon = { Icon(icons[i], contentDescription = t.title) },
-                            label = { Text(t.title) }
+                            label = { Text(t.title) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = r.footerText,
+                                selectedTextColor = r.footerText,
+                                unselectedIconColor = r.footerText.copy(alpha = 0.65f),
+                                unselectedTextColor = r.footerText.copy(alpha = 0.65f),
+                                indicatorColor = r.accent.copy(alpha = 0.3f)
+                            )
                         )
                     }
+                }
+            } else {
+                Box(Modifier.fillMaxWidth().background(r.footer).height(30.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        "Eazyradius CRM · " + Api.base.removePrefix("https://").removePrefix("http://").trimEnd('/'),
+                        color = r.footerText,
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
         }
@@ -222,4 +282,5 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
             }
         }
     }
+    if (showTheme) ThemeDialog { showTheme = false }
 }

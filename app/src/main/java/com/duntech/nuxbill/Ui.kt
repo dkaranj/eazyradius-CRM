@@ -1,6 +1,21 @@
 package com.duntech.nuxbill
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.widget.Toast
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Shapes
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Density
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,14 +52,71 @@ import org.json.JSONObject
 private val Good = Color(0xFF16A34A)
 private val Bad = Color(0xFFDC2626)
 
+/** The colours the shell (header, footer) reads directly. */
+val LocalResolvedTheme = staticCompositionLocalOf { resolveTheme(ThemeConfig(), false) }
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @Composable
 fun NuxTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme()) {
-        darkColorScheme(primary = Color(0xFF5EEAD4), onPrimary = Color(0xFF042F2E))
-    } else {
-        lightColorScheme(primary = Color(0xFF0F766E))
+    val r = resolveTheme(ThemeState.config, isSystemInDarkTheme())
+    val base = if (r.dark) darkColorScheme() else lightColorScheme()
+    val scheme = base.copy(
+        primary = r.accent,
+        onPrimary = r.onAccent,
+        primaryContainer = lerp(r.background, r.accent, 0.22f),
+        onPrimaryContainer = r.text,
+        secondaryContainer = lerp(r.background, r.accent, 0.28f),
+        onSecondaryContainer = r.text,
+        background = r.background,
+        onBackground = r.text,
+        surface = r.background,
+        onSurface = r.text,
+        surfaceVariant = r.card,
+        onSurfaceVariant = r.muted,
+        surfaceContainerLowest = r.background,
+        surfaceContainerLow = r.background,
+        surfaceContainer = r.card,
+        surfaceContainerHigh = r.card,
+        surfaceContainerHighest = r.card,
+        outline = r.text.copy(alpha = 0.45f),
+        outlineVariant = r.text.copy(alpha = 0.2f)
+    )
+    val rad = r.radius
+    val shapes = Shapes(
+        extraSmall = RoundedCornerShape((rad / 3).dp),
+        small = RoundedCornerShape((rad / 2).dp),
+        medium = RoundedCornerShape(rad.dp),
+        large = RoundedCornerShape((rad * 13 / 10).dp),
+        extraLarge = RoundedCornerShape((rad * 17 / 10).dp)
+    )
+
+    // status bar follows the header colour, navigation bar follows the footer colour
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = view.context.findActivity()?.window
+            if (window != null) {
+                window.statusBarColor = r.header.toArgb()
+                window.navigationBarColor = r.footer.toArgb()
+                val ctl = WindowCompat.getInsetsController(window, view)
+                ctl.isAppearanceLightStatusBars = r.header.luminance() > 0.5f
+                ctl.isAppearanceLightNavigationBars = r.footer.luminance() > 0.5f
+            }
+        }
     }
-    MaterialTheme(colorScheme = scheme, content = content)
+
+    val d = LocalDensity.current
+    CompositionLocalProvider(
+        LocalResolvedTheme provides r,
+        LocalDensity provides Density(d.density, d.fontScale * r.textScale)
+    ) {
+        MaterialTheme(colorScheme = scheme, shapes = shapes, content = content)
+    }
 }
 
 fun toast(ctx: android.content.Context, msg: String?) {

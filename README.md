@@ -58,3 +58,14 @@ their column names. If a leads/tickets table does not exist it creates `tbl_mobi
 
 Installations cannot be created or completed from the app, so the Installations plugin's M-Pesa payment gate stays in charge.
 Assignment needs an assignee column (`assigned_to`, `technician_id`, ...); if a table has none the app says so.
+
+## Theme
+
+Everyone (admin, technician, client, and even the login screen) has a **Theme** button. It opens a screen with a live preview where you can:
+
+- pick **Follow phone / Light / Dark**;
+- pick a preset (Teal, Ocean, Forest, Sunset, Royal, Rose, Slate, Gold);
+- change the **accent, header, header text, footer, footer text, screen background, grid cards and text** colours with a colour picker (sliders, hex code or quick swatches), or leave any of them on **Auto**;
+- set **corner roundness** and **text size**.
+
+Anything left on Auto is worked out from the other choices (for example text and cards follow the background), and a warning appears if a combination is hard to read. The choice is saved on the phone, so it survives restarts and logouts and is personal to each device.
