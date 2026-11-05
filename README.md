@@ -69,3 +69,13 @@ Everyone (admin, technician, client, and even the login screen) has a **Theme** 
 - set **corner roundness** and **text size**.
 
 Anything left on Auto is worked out from the other choices (for example text and cards follow the background), and a warning appears if a combination is hard to read. The choice is saved on the phone, so it survives restarts and logouts and is personal to each device.
+
+## Network, usage, audit and offline
+
+- **Support tickets**: when creating a ticket you now search and pick the client (name, username or phone), choose a category and Low/Medium/High priority. The ticket is saved in the same format the website uses.
+- **ONUs tab** (module "ONU monitoring"): live online/offline and signal from GenieACS (address and login are read from the TR-069 plugin settings), filter by offline or weak signal, open an ONU for history, alerts and a Reboot button. If GenieACS cannot be reached it shows the last readings the website recorded.
+- **Usage tab** (module "Data usage and FUP"): today and month totals, top users, who is throttled, FUP rules, and a per-customer view. Clients get their own **Usage** tab with their FUP progress and a 14-day chart.
+- **Audit tab** (module "Audit log"): who did what and when (logins, failed logins, tickets, status changes, recharges, user and access changes, clocking, leave, ONU reboots, refused actions), plus the website's HR audit entries. Turn it on per role on the Access screen.
+- **Offline mode**: every screen keeps its last data and shows it with a banner when there is no connection. New tickets and leads, status changes, clock in/out and leave requests are saved on the phone and sent automatically when it is back online (each is applied once, even if the connection drops mid-send). Clocking offline records the time you actually pressed the button. Anything the server refuses later is listed under Review.
+
+Re-upload `server/system/plugin/mobile_api.php` after updating; the two new tables are created automatically.

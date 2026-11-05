@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -327,9 +329,32 @@ private fun CreateDialog(entity: String, techs: List<JSONObject>, onClose: () ->
     var phone by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
-    var priority by remember { mutableStateOf("normal") }
+    var priority by remember { mutableStateOf(if (entity == "ticket") "Medium" else "normal") }
     var assignee by remember { mutableStateOf(0) }
     var busy by remember { mutableStateOf(false) }
+    var customer by remember { mutableStateOf<JSONObject?>(null) }
+    var query by remember { mutableStateOf("") }
+    var found by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var searchNote by remember { mutableStateOf("") }
+    var categories by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var category by remember { mutableStateOf(0) }
+
+    if (entity == "ticket") {
+        LaunchedEffect(Unit) {
+            try { categories = Api.call("ticket_meta").optJSONArray("categories").list() } catch (e: Exception) { }
+        }
+        LaunchedEffect(query, customer) {
+            if (customer != null) return@LaunchedEffect
+            kotlinx.coroutines.delay(300)
+            try {
+                found = Api.call("customer_lookup", mapOf("q" to query.trim())).optJSONArray("rows").list()
+                searchNote = if (found.isEmpty()) "No customer matches" else ""
+            } catch (e: Exception) {
+                found = emptyList()
+                searchNote = e.message ?: "Could not search customers"
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onClose,
@@ -340,16 +365,65 @@ private fun CreateDialog(entity: String, techs: List<JSONObject>, onClose: () ->
                     title, { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     label = { Text(if (entity == "lead") "Lead name" else "Subject") }
                 )
-                OutlinedTextField(
-                    phone, { phone = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Phone") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
-                )
-                OutlinedTextField(address, { address = it }, singleLine = true, modifier = Modifier.fillMaxWidth(), label = { Text("Address / location") })
+                if (entity == "ticket") {
+                    Text("Client", style = MaterialTheme.typography.labelLarge)
+                    val cu = customer
+                    if (cu != null) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(cu.optString("name"), fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        listOf(cu.optString("username"), cu.optString("phone")).filter { it.isNotBlank() }.joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                TextButton(onClick = { customer = null; query = "" }) { Text("Change") }
+                            }
+                        }
+                    } else {
+                        OutlinedTextField(
+                            query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Search by name, username or phone") }
+                        )
+                        if (searchNote.isNotBlank()) Text(searchNote, style = MaterialTheme.typography.bodySmall)
+                        found.take(6).forEach { c ->
+                            Card(Modifier.fillMaxWidth().clickable {
+                                customer = c
+                                if (title.isBlank()) title = "Issue: " + c.optString("name")
+                            }) {
+                                Column(Modifier.padding(10.dp)) {
+                                    Text(c.optString("name"), fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        listOf(c.optString("username"), c.optString("phone"), c.optString("service")).filter { it.isNotBlank() }.joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                if (entity == "lead" || customer == null) {
+                    OutlinedTextField(
+                        phone, { phone = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Phone") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                    )
+                    OutlinedTextField(address, { address = it }, singleLine = true, modifier = Modifier.fillMaxWidth(), label = { Text("Address / location") })
+                }
                 OutlinedTextField(notes, { notes = it }, modifier = Modifier.fillMaxWidth(), label = { Text(if (entity == "lead") "Notes" else "Describe the issue") })
                 if (entity == "ticket") {
+                    if (categories.isNotEmpty()) {
+                        Text("Category", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(categories) { c ->
+                                val id = c.optInt("id")
+                                FilterChip(selected = category == id, onClick = { category = if (category == id) 0 else id }, label = { Text(c.optString("name")) })
+                            }
+                        }
+                    }
                     Text("Priority", style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("low", "normal", "high").forEach { p ->
+                        listOf("Low", "Medium", "High").forEach { p ->
                             FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text(p) })
                         }
                     }
@@ -378,7 +452,9 @@ private fun CreateDialog(entity: String, techs: List<JSONObject>, onClose: () ->
                                 mapOf(
                                     "entity" to entity, "title" to title.trim(), "phone" to phone.trim(),
                                     "address" to address.trim(), "notes" to notes.trim(), "priority" to priority,
-                                    "assignee_id" to assignee.toString()
+                                    "assignee_id" to assignee.toString(),
+                                    "customer_id" to (customer?.optInt("id") ?: 0).toString(),
+                                    "category_id" to category.toString()
                                 )
                             )
                             toast(ctx, r.optString("message", "Saved"))

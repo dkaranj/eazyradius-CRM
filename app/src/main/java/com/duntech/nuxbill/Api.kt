@@ -47,7 +47,41 @@ object Api {
     /** Modules the signed-in user may open; lets screens hide fields the server would refuse anyway. */
     var modules: List<String> = emptyList()
 
-    suspend fun call(action: String, params: Map<String, String> = emptyMap()): JSONObject =
+    /**
+     * The one door to the server. Reads fall back to the last saved answer when the phone is offline;
+     * a few writes (new tickets, status changes, clocking, leave) wait in a queue and are sent later.
+     */
+    suspend fun call(action: String, params: Map<String, String> = emptyMap()): JSONObject {
+        if (token.isEmpty()) return network(action, params)
+        if (action in Offline.queueable) {
+            val p = params + ("op_id" to Offline.newOpId()) + ("at" to (System.currentTimeMillis() / 1000).toString())
+            return try {
+                val r = network(action, p)
+                Offline.markOnline()
+                r
+            } catch (e: java.io.IOException) {
+                Offline.enqueue(action, p, Offline.owner)
+                JSONObject().put("ok", true).put("queued", true)
+                    .put("message", "No connection. Saved on this phone and will be sent automatically")
+            }
+        }
+        return try {
+            val r = network(action, params)
+            Offline.markOnline()
+            if (action !in Offline.neverCache) Offline.saveCache(action, params, token, r)
+            r
+        } catch (e: java.io.IOException) {
+            val c = if (action in Offline.neverCache) null else Offline.loadCache(action, params, token)
+            if (c != null) {
+                Offline.markOffline()
+                c
+            } else {
+                throw ApiException("No connection and nothing saved for this screen yet", 0)
+            }
+        }
+    }
+
+    suspend fun network(action: String, params: Map<String, String> = emptyMap()): JSONObject =
         withContext(Dispatchers.IO) {
             val url = URL(
                 base.trimEnd('/') + "/?_route=plugin/mobile_api&a=" + URLEncoder.encode(action, "UTF-8")
@@ -96,6 +130,7 @@ object Store {
 
     fun init(ctx: Context) {
         prefs = ctx.getSharedPreferences("nux", Context.MODE_PRIVATE)
+        Offline.init(ctx)
     }
 
     fun lastUrl(): String = prefs.getString("url", "") ?: ""
@@ -136,6 +171,7 @@ object Store {
     }
 
     fun clear() {
+        Offline.clearCache()
         prefs.edit().remove("token").remove("role").remove("name").remove("utype")
             .remove("modules").remove("scope_all").remove("can_assign").remove("can_create")
             .remove("is_super").remove("is_tech").apply()

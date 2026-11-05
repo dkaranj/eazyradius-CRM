@@ -33,6 +33,15 @@ function mobile_api()
 
         $s = mobile_api_auth();
 
+        // offline queue: an action replayed with an op_id we already applied is acknowledged, not applied twice
+        $opId = trim((string) mobile_api_in('op_id'));
+        $opId = ($opId !== '' && preg_match('/^[A-Za-z0-9_-]{8,40}$/', $opId) && in_array($a, mobile_api_queueable(), true)) ? $opId : '';
+        $GLOBALS['mobile_api_ctx'] = ['a' => $a, 's' => $s, 'op_id' => $opId];
+        if ($opId !== '' && mobile_api_rows('SELECT op_id FROM tbl_mobile_ops WHERE op_id = ? AND user_id = ?', [$opId, (int) $s['user_id']])) {
+            $GLOBALS['mobile_api_ctx'] = null;
+            mobile_api_out(['ok' => true, 'duplicate' => true, 'message' => 'Already applied']);
+        }
+
         switch ($a) {
             case 'logout':
                 ORM::for_table('tbl_mobile_tokens')->where('id', $s['token_id'])->delete_many();
@@ -110,6 +119,39 @@ function mobile_api()
                 mobile_api_staff($s);
                 mobile_api_out(['ok' => true] + mobile_api_ops_overview(mobile_api_scope_uid($s), mobile_api_ops_allowed($s)));
 
+            // ---- staff: tickets need a customer and a category ----
+            case 'customer_lookup':
+                mobile_api_any_mod($s, ['support', 'customers']);
+                mobile_api_customer_lookup();
+            case 'ticket_meta':
+                mobile_api_any_mod($s, ['support']);
+                mobile_api_ticket_meta();
+
+            // ---- staff: network ----
+            case 'onu_list':
+                mobile_api_mod($s, 'onu');
+                mobile_api_onu_list();
+            case 'onu_detail':
+                mobile_api_mod($s, 'onu');
+                mobile_api_onu_detail();
+            case 'onu_reboot':
+                mobile_api_mod($s, 'onu');
+                mobile_api_onu_reboot($s);
+            case 'usage_overview':
+                mobile_api_mod($s, 'usage');
+                mobile_api_usage_overview();
+            case 'usage_user':
+                mobile_api_mod($s, 'usage');
+                mobile_api_usage_user();
+            case 'client_usage':
+                mobile_api_client_only($s);
+                mobile_api_client_usage($s);
+
+            // ---- staff: audit log ----
+            case 'audit_list':
+                mobile_api_mod($s, 'audit');
+                mobile_api_audit_list($s);
+
             // ---- staff: HR ----
             case 'hr_me':
                 mobile_api_mod($s, 'my_hr');
@@ -172,6 +214,9 @@ function mobile_api_in($k, $d = '')
 
 function mobile_api_out($data, $code = 200)
 {
+    if (!empty($GLOBALS['mobile_api_ctx']) && is_array($data)) {
+        mobile_api_finish($data, $code);
+    }
     http_response_code($code);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
     exit;
@@ -215,6 +260,34 @@ function mobile_api_boot()
                 can_create TINYINT(1) NOT NULL DEFAULT 0,
                 updated_by INT NULL,
                 updated_at DATETIME NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_audit' => [
+            ['user_id', 'user_name', 'user_role', 'action', 'entity', 'entity_id', 'details', 'ip', 'client_time', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_audit (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 0,
+                user_name VARCHAR(100) NULL,
+                user_role VARCHAR(30) NULL,
+                action VARCHAR(40) NOT NULL,
+                entity VARCHAR(30) NULL,
+                entity_id INT NULL,
+                details VARCHAR(500) NULL,
+                ip VARCHAR(45) NULL,
+                client_time DATETIME NULL,
+                created_at DATETIME NOT NULL,
+                KEY idx_created (created_at),
+                KEY idx_user (user_id),
+                KEY idx_action (action)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_ops' => [
+            ['op_id', 'user_id', 'action', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_ops (
+                op_id VARCHAR(40) NOT NULL PRIMARY KEY,
+                user_id INT NOT NULL,
+                action VARCHAR(40) NOT NULL,
+                created_at DATETIME NOT NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_lead_assign' => [
@@ -301,6 +374,7 @@ function mobile_api_login()
     }
 
     if ($role === null) {
+        mobile_api_audit(0, $u, '', 'login_failed', 'session', null, 'wrong username or password');
         mobile_api_fail('Wrong username or password', 401);
     }
 
@@ -319,6 +393,7 @@ function mobile_api_login()
         $out['user_type'] = $acc['user_type'];
         $out['access'] = mobile_api_access_out($acc);
     }
+    mobile_api_audit($uid, $name, $role === 'staff' ? $out['user_type'] : 'client', 'login', 'session', null, '');
     mobile_api_out($out);
 }
 
@@ -1095,6 +1170,31 @@ function mobile_api_ops_create($s)
     $phone = trim((string) mobile_api_in('phone'));
     $address = trim((string) mobile_api_in('address'));
     $notes = trim((string) mobile_api_in('notes'));
+    if ($e === 'ticket') {
+        // a ticket is about a customer: pick one, and the details are filled in the same way the website writes them
+        $cid = (int) mobile_api_in('customer_id', 0);
+        if ($cid > 0) {
+            $cu = ORM::for_table('tbl_customers')->find_one($cid);
+            if (!$cu) {
+                mobile_api_fail('That customer no longer exists', 422);
+            }
+            if ($phone === '') $phone = (string) $cu['phonenumber'];
+            if ($address === '') $address = (string) $cu['address'];
+            $head = 'Customer: ' . ($cu['fullname'] ?: $cu['username']) . ' (' . $cu['phonenumber'] . ')';
+            if ($address !== '') $head .= "\nLocation: " . $address;
+            $head .= "\nUsername: " . $cu['username'];
+            $notes = $head . ($notes !== '' ? "\n\n" . $notes : '');
+            if (isset($meta['cols']['customer_id'])) $r->set('customer_id', $cid);
+        }
+        $cat = (int) mobile_api_in('category_id', 0);
+        if ($cat > 0 && isset($meta['cols']['category_id'])) {
+            $okc = false;
+            try { $okc = (bool) mobile_api_rows('SELECT id FROM tbl_support_categories WHERE id = ?', [$cat]); } catch (Throwable $x) { $okc = true; }
+            if ($okc) $r->set('category_id', $cat);
+        }
+        $pr = ucfirst(strtolower(trim((string) mobile_api_in('priority'))));
+        $_POST['priority'] = in_array($pr, ['Low', 'Medium', 'High'], true) ? $pr : 'Medium';
+    }
     if ($m['phone'] && $phone !== '') $r->set($m['phone'], $phone);
     if ($m['address'] && $address !== '') $r->set($m['address'], $address);
     if ($m['notes'] && $notes !== '' && $m['notes'] !== $m['title']) $r->set($m['notes'], $notes);
@@ -1547,6 +1647,9 @@ function mobile_api_catalog()
         ['key' => 'hr_attendance', 'label' => 'Attendance', 'group' => 'HR'],
         ['key' => 'hr_leave', 'label' => 'Leave approvals', 'group' => 'HR'],
         ['key' => 'hr_payroll', 'label' => 'Payroll (view only)', 'group' => 'HR'],
+        ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
+        ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
+        ['key' => 'audit', 'label' => 'Audit log', 'group' => 'Admin'],
         ['key' => 'users', 'label' => 'Staff users', 'group' => 'Admin'],
     ];
 }
@@ -1567,7 +1670,7 @@ function mobile_api_default_access($key)
         case 'type:Agent':
             return ['modules' => ['leads', 'customers', 'my_hr'], 'scope' => 'all', 'assign' => false, 'create' => true];
         case 'tech':
-            return ['modules' => ['installations', 'support', 'leads', 'my_hr'], 'scope' => 'mine', 'assign' => false, 'create' => true];
+            return ['modules' => ['installations', 'support', 'leads', 'onu', 'my_hr'], 'scope' => 'mine', 'assign' => false, 'create' => true];
     }
     return null;
 }
@@ -1589,6 +1692,7 @@ function mobile_api_role_derived($id)
         if (strpos($p, 'installations.') === 0 || strpos($p, 'jobs.') === 0) $mods[] = 'installations';
         if (strpos($p, 'tickets.') === 0 || strpos($p, 'support.') === 0) $mods[] = 'support';
         if (strpos($p, 'customers.') === 0) $mods[] = 'customers';
+        if (strpos($p, 'network.') === 0) $mods[] = 'onu';
         if ($p === 'installations.work' || $p === 'jobs.update') $field = true;
     }
     return ['modules' => array_values(array_unique($mods)), 'scope' => $field ? 'mine' : 'all', 'assign' => false, 'create' => true];
@@ -1913,8 +2017,11 @@ function mobile_api_hr_clock($s)
         mobile_api_fail('Your employee record is not active', 403);
     }
     $act = (string) mobile_api_in('act');
-    $today = date('Y-m-d');
-    $now = date('H:i:s');
+    // a clock tap made offline carries its real time (epoch seconds); accept only a sane, recent, non-future time
+    $at = (int) mobile_api_in('at', 0);
+    $ts = ($at > 0 && $at <= time() + 300 && $at >= time() - 3 * 86400) ? $at : time();
+    $today = date('Y-m-d', $ts);
+    $now = date('H:i:s', $ts);
     $att = ORM::for_table('tbl_hr_attendance')->where('employee_id', $emp['id'])->where('work_date', $today)->find_one();
     if ($act === 'in') {
         if ($att && !empty($att['clock_in'])) {
@@ -2234,4 +2341,525 @@ function mobile_api_hr_payroll()
     usort($rows, function ($a, $b) { return strcmp($a['employee'], $b['employee']); });
     mobile_api_out(['ok' => true, 'month' => $month, 'rows' => $rows,
         'totals' => ['count' => count($rows), 'paid' => $paid, 'gross' => mobile_api_money($gross), 'net' => mobile_api_money($net)]]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* audit log and offline replay                                        */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_rows($sql, $args = [])
+{
+    $st = ORM::get_db()->prepare($sql);
+    $st->execute($args);
+    return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/** Actions the phone may queue while offline and replay later. Each is safe to receive twice thanks to op_id. */
+function mobile_api_queueable()
+{
+    return ['ops_create', 'ops_update', 'hr_clock', 'hr_leave_request'];
+}
+
+/** Actions that change something, and so belong in the audit log. */
+function mobile_api_audited()
+{
+    return [
+        'ops_create' => 'create', 'ops_update' => 'update', 'admin_recharge' => 'recharge',
+        'admin_user_save' => 'user_save', 'admin_user_delete' => 'user_delete',
+        'access_save' => 'access_save', 'access_reset' => 'access_reset',
+        'client_buy' => 'purchase', 'hr_clock' => 'clock', 'hr_leave_request' => 'leave_request',
+        'hr_employee_save' => 'employee_save', 'hr_leave_decide' => 'leave_decide',
+        'onu_reboot' => 'onu_reboot', 'logout' => 'logout',
+    ];
+}
+
+function mobile_api_audit($uid, $name, $role, $action, $entity, $entityId, $details)
+{
+    try {
+        $ct = null;
+        $at = (int) mobile_api_in('queued_at', 0);
+        if ($at > 0 && $at <= time() + 300 && $at >= time() - 30 * 86400) {
+            $ct = date('Y-m-d H:i:s', $at);
+        }
+        $st = ORM::get_db()->prepare('INSERT INTO tbl_mobile_audit (user_id, user_name, user_role, action, entity, entity_id, details, ip, client_time, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+        $st->execute([(int) $uid, mb_substr((string) $name, 0, 100), mb_substr((string) $role, 0, 30), $action,
+            $entity === '' ? null : mb_substr((string) $entity, 0, 30), $entityId === null ? null : (int) $entityId,
+            mb_substr((string) $details, 0, 500), isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '',
+            $ct, date('Y-m-d H:i:s')]);
+    } catch (Throwable $e) {
+        // the audit trail must never block the action itself
+    }
+}
+
+/** Called from mobile_api_out for every authenticated reply: records writes, denials, and applied op_ids. */
+function mobile_api_finish($data, $code)
+{
+    $c = $GLOBALS['mobile_api_ctx'];
+    $GLOBALS['mobile_api_ctx'] = null;
+    try {
+        $s = $c['s'];
+        $a = $c['a'];
+        $ok = $code < 400 && !empty($data['ok']);
+        $uid = (int) $s['user_id'];
+        $name = $s['role'] === 'staff' ? $s['access']['name'] : 'client #' . $uid;
+        $role = $s['role'] === 'staff' ? ($s['access']['super'] ? 'SuperAdmin' : (isset($s['access']['user_type']) ? $s['access']['user_type'] : 'staff')) : 'client';
+        $audited = mobile_api_audited();
+        if ($code === 403 && isset($data['error'])) {
+            mobile_api_audit($uid, $name, $role, 'denied', 'action', null, $a . ': ' . $data['error']);
+            return;
+        }
+        if (!isset($audited[$a])) {
+            return;
+        }
+        $entity = (string) mobile_api_in('entity');
+        $parts = [];
+        foreach (['title', 'status', 'assignee_id', 'username', 'customer_id', 'act', 'plan_id', 'id', 'from', 'to', 'decision'] as $k) {
+            $v = mobile_api_in($k);
+            if ($v !== '' && is_scalar($v)) $parts[] = $k . '=' . mb_substr((string) $v, 0, 60);
+        }
+        $id = isset($data['id']) ? (int) $data['id'] : (int) mobile_api_in('id', 0);
+        $state = $ok ? '' : 'FAILED: ' . (isset($data['error']) ? $data['error'] : $code) . ' ';
+        mobile_api_audit($uid, $name, $role, $audited[$a], $entity !== '' ? $entity : null, $id > 0 ? $id : null, $state . implode(', ', $parts));
+        if ($ok && $c['op_id'] !== '') {
+            ORM::get_db()->prepare('INSERT IGNORE INTO tbl_mobile_ops (op_id, user_id, action, created_at) VALUES (?,?,?,?)')
+                ->execute([$c['op_id'], $uid, $a, date('Y-m-d H:i:s')]);
+            if (mt_rand(1, 50) === 1) {
+                ORM::get_db()->exec("DELETE FROM tbl_mobile_ops WHERE created_at < '" . date('Y-m-d H:i:s', time() - 14 * 86400) . "'");
+            }
+        }
+    } catch (Throwable $e) {
+        // never block the reply
+    }
+}
+
+function mobile_api_any_mod($s, $mods)
+{
+    mobile_api_staff($s);
+    foreach ($mods as $m) {
+        if (in_array($m, $s['access']['modules'], true)) return;
+    }
+    mobile_api_fail('Your role cannot open this section', 403);
+}
+
+function mobile_api_audit_list($s)
+{
+    $where = [];
+    $args = [];
+    $q = trim((string) mobile_api_in('q'));
+    if ($q !== '') {
+        $where[] = '(user_name LIKE ? OR details LIKE ? OR action LIKE ?)';
+        $args = ['%' . $q . '%', '%' . $q . '%', '%' . $q . '%'];
+    }
+    $act = trim((string) mobile_api_in('action'));
+    if ($act !== '') {
+        $where[] = 'action = ?';
+        $args[] = $act;
+    }
+    $w = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+    $page = max(0, (int) mobile_api_in('page', 0));
+    $rows = mobile_api_rows('SELECT id, user_name, user_role, action, entity, entity_id, details, ip, client_time, created_at FROM tbl_mobile_audit' . $w
+        . ' ORDER BY id DESC LIMIT 60 OFFSET ' . ($page * 60), $args);
+    $out = [];
+    foreach ($rows as $r) {
+        $out[] = ['id' => (int) $r['id'], 'user' => $r['user_name'], 'role' => $r['user_role'], 'action' => $r['action'],
+            'entity' => $r['entity'], 'entity_id' => $r['entity_id'], 'details' => $r['details'], 'ip' => $r['ip'],
+            'time' => $r['created_at'], 'queued_time' => $r['client_time'], 'source' => 'app'];
+    }
+    // HR actions made on the website are in their own table; show them alongside when asked
+    if ($page === 0 && (string) mobile_api_in('include_hr') === '1' && $q === '' && $act === '') {
+        try {
+            foreach (mobile_api_rows('SELECT id, actor_name, action, entity_type, entity_id, details, ip_address, created_at FROM tbl_hr_audit_logs ORDER BY id DESC LIMIT 30') as $r) {
+                $out[] = ['id' => 0, 'user' => $r['actor_name'], 'role' => '', 'action' => $r['action'], 'entity' => $r['entity_type'],
+                    'entity_id' => $r['entity_id'], 'details' => $r['details'], 'ip' => $r['ip_address'], 'time' => $r['created_at'],
+                    'queued_time' => null, 'source' => 'hr'];
+            }
+            usort($out, function ($x, $y) { return strcmp($y['time'], $x['time']); });
+        } catch (Throwable $e) {
+        }
+    }
+    $kinds = [];
+    foreach (mobile_api_rows('SELECT action, COUNT(*) n FROM tbl_mobile_audit GROUP BY action ORDER BY n DESC') as $k) {
+        $kinds[] = $k['action'];
+    }
+    mobile_api_out(['ok' => true, 'rows' => $out, 'actions' => $kinds, 'more' => count($rows) === 60]);
+}
+
+/* ------------------------------------------------------------------ */
+/* ticket form helpers                                                 */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_customer_lookup()
+{
+    $q = trim((string) mobile_api_in('q'));
+    $orm = ORM::for_table('tbl_customers')->select_many('id', 'username', 'fullname', 'phonenumber', 'address', 'service_type')->order_by_asc('fullname')->limit(25);
+    if ($q !== '') {
+        $like = '%' . $q . '%';
+        $orm->where_raw('(fullname LIKE ? OR username LIKE ? OR phonenumber LIKE ?)', [$like, $like, $like]);
+    }
+    $rows = [];
+    foreach ($orm->find_many() as $c) {
+        $rows[] = ['id' => (int) $c['id'], 'name' => $c['fullname'] ?: $c['username'], 'username' => $c['username'],
+            'phone' => $c['phonenumber'], 'address' => (string) $c['address'], 'service' => $c['service_type']];
+    }
+    mobile_api_out(['ok' => true, 'rows' => $rows]);
+}
+
+function mobile_api_ticket_meta()
+{
+    $cats = [];
+    try {
+        foreach (mobile_api_rows('SELECT id, name FROM tbl_support_categories ORDER BY name') as $c) {
+            $cats[] = ['id' => (int) $c['id'], 'name' => $c['name']];
+        }
+    } catch (Throwable $e) {
+    }
+    mobile_api_out(['ok' => true, 'categories' => $cats, 'priorities' => ['Low', 'Medium', 'High']]);
+}
+
+/* ------------------------------------------------------------------ */
+/* ONU monitoring (GenieACS)                                           */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_nbi($path, $method = 'GET', $body = null)
+{
+    global $config;
+    $base = isset($config['tr069_url']) ? trim($config['tr069_url']) : '';
+    if ($base === '' || !function_exists('curl_init')) {
+        return null;
+    }
+    if (!preg_match('#^https?://#', $base)) $base = 'http://' . $base;
+    $ch = curl_init(rtrim($base, '/') . $path);
+    $opt = [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 8, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_CUSTOMREQUEST => $method];
+    $user = isset($config['tr069_user']) ? $config['tr069_user'] : '';
+    $pass = isset($config['tr069_pass']) ? $config['tr069_pass'] : (isset($config['tr069_password']) ? $config['tr069_password'] : '');
+    if ($user !== '') $opt[CURLOPT_USERPWD] = $user . ':' . $pass;
+    if ($body !== null) {
+        $opt[CURLOPT_POSTFIELDS] = json_encode($body);
+        $opt[CURLOPT_HTTPHEADER] = ['Content-Type: application/json'];
+    }
+    curl_setopt_array($ch, $opt);
+    $res = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($res === false || $code >= 400 || $code === 0) {
+        return null;
+    }
+    $j = json_decode($res, true);
+    return $j === null ? [] : $j;
+}
+
+function mobile_api_nbi_val($d, $path)
+{
+    $n = $d;
+    foreach (explode('.', $path) as $p) {
+        if (!is_array($n) || !isset($n[$p])) return null;
+        $n = $n[$p];
+    }
+    return is_array($n) && array_key_exists('_value', $n) ? $n['_value'] : null;
+}
+
+function mobile_api_nbi_first($d, $paths)
+{
+    foreach ($paths as $p) {
+        $v = mobile_api_nbi_val($d, $p);
+        if ($v !== null && $v !== '') return $v;
+    }
+    return null;
+}
+
+function mobile_api_onu_online($lastInform)
+{
+    global $config;
+    $secs = isset($config['tr069_online_secs']) ? max(60, (int) $config['tr069_online_secs']) : 600;
+    $t = $lastInform ? strtotime($lastInform) : 0;
+    return $t > 0 && (time() - $t) <= $secs;
+}
+
+/** One ONU as the app shows it, from a GenieACS device document. */
+function mobile_api_onu_row($d, $links, $rx)
+{
+    $id = (string) $d['_id'];
+    $inform = isset($d['_lastInform']) ? $d['_lastInform'] : null;
+    $rxv = mobile_api_nbi_first($d, ['VirtualParameters.RXPower', 'VirtualParameters.rxpower', 'VirtualParameters.RxPower', 'VirtualParameters.rx_power']);
+    $ssid = mobile_api_nbi_first($d, ['InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID', 'Device.WiFi.SSID.1.SSID']);
+    $row = [
+        'id' => $id,
+        'model' => (string) mobile_api_nbi_first($d, ['_deviceId._ProductClass']) ?: (isset($d['_deviceId']['_ProductClass']) ? $d['_deviceId']['_ProductClass'] : ''),
+        'serial' => isset($d['_deviceId']['_SerialNumber']) ? $d['_deviceId']['_SerialNumber'] : '',
+        'online' => mobile_api_onu_online($inform),
+        'last_inform' => $inform ? date('Y-m-d H:i:s', strtotime($inform)) : '',
+        'rx' => $rxv !== null ? mobile_api_onu_rx($rxv) : (isset($rx[$id]) ? mobile_api_onu_rx($rx[$id]) : null),
+        'ssid' => (string) $ssid,
+        'software' => (string) mobile_api_nbi_first($d, ['InternetGatewayDevice.DeviceInfo.SoftwareVersion', 'Device.DeviceInfo.SoftwareVersion']),
+        'customer' => isset($links[$id]) ? $links[$id] : null,
+    ];
+    return $row;
+}
+
+function mobile_api_onu_rx($v)
+{
+    // optical power is always a negative dBm figure; anything else in the cache is an unscaled raw reading
+    if ($v === null || $v === '') return null;
+    $v = (float) $v;
+    return ($v < 0 && $v > -60) ? $v : null;
+}
+
+function mobile_api_onu_state($rx)
+{
+    if ($rx === null) return 'unknown';
+    if ($rx <= -27) return 'over';
+    if ($rx <= -24) return 'warn';
+    return 'ok';
+}
+
+function mobile_api_onu_maps()
+{
+    $links = [];
+    try {
+        foreach (mobile_api_rows('SELECT l.device_id, c.id cid, c.fullname, c.username, c.phonenumber FROM tbl_tr069_links l LEFT JOIN tbl_customers c ON c.id = l.customer_id') as $l) {
+            if (!$l['cid']) continue;
+            $links[$l['device_id']] = ['id' => (int) $l['cid'], 'name' => $l['fullname'] ?: $l['username'], 'phone' => $l['phonenumber']];
+        }
+    } catch (Throwable $e) {
+    }
+    $rx = [];
+    try {
+        foreach (mobile_api_rows('SELECT r.device_id, r.rx FROM tbl_tr069_rx r JOIN (SELECT device_id, MAX(id) m FROM tbl_tr069_rx GROUP BY device_id) x ON x.m = r.id') as $r) {
+            $rx[$r['device_id']] = $r['rx'];
+        }
+    } catch (Throwable $e) {
+    }
+    return [$links, $rx];
+}
+
+function mobile_api_onu_list()
+{
+    list($links, $rx) = mobile_api_onu_maps();
+    $proj = '_id,_lastInform,_deviceId,VirtualParameters,InternetGatewayDevice.DeviceInfo.SoftwareVersion,Device.DeviceInfo.SoftwareVersion';
+    $docs = mobile_api_nbi('/devices?projection=' . rawurlencode($proj));
+    $live = is_array($docs);
+    $rows = [];
+    if ($live) {
+        foreach ($docs as $d) {
+            if (isset($d['_id'])) $rows[] = mobile_api_onu_row($d, $links, $rx);
+        }
+    } else {
+        // GenieACS not reachable: show what the website last recorded
+        $ids = array_unique(array_merge(array_keys($links), array_keys($rx)));
+        foreach ($ids as $id) {
+            $rows[] = ['id' => $id, 'model' => '', 'serial' => '', 'online' => null, 'last_inform' => '', 'rx' => isset($rx[$id]) ? mobile_api_onu_rx($rx[$id]) : null,
+                'ssid' => '', 'software' => '', 'customer' => isset($links[$id]) ? $links[$id] : null];
+        }
+    }
+    $on = $off = $bad = 0;
+    $total = count($rows);
+    foreach ($rows as &$r) {
+        $r['rx_state'] = mobile_api_onu_state($r['rx']);
+        if ($r['online'] === true) $on++;
+        elseif ($r['online'] === false) $off++;
+        if ($r['rx_state'] === 'over' || $r['rx_state'] === 'warn') $bad++;
+    }
+    unset($r);
+    $q = strtolower(trim((string) mobile_api_in('q')));
+    $f = (string) mobile_api_in('filter');
+    $rows = array_values(array_filter($rows, function ($r) use ($q, $f) {
+        if ($f === 'offline' && $r['online'] !== false) return false;
+        if ($f === 'online' && $r['online'] !== true) return false;
+        if ($f === 'weak' && !in_array($r['rx_state'], ['over', 'warn'], true)) return false;
+        if ($q !== '') {
+            $hay = strtolower($r['id'] . ' ' . $r['serial'] . ' ' . $r['model'] . ' ' . ($r['customer'] ? $r['customer']['name'] . ' ' . $r['customer']['phone'] : ''));
+            if (strpos($hay, $q) === false) return false;
+        }
+        return true;
+    }));
+    // offline first, then weakest signal
+    usort($rows, function ($a, $b) {
+        $ao = $a['online'] === false ? 0 : 1;
+        $bo = $b['online'] === false ? 0 : 1;
+        if ($ao !== $bo) return $ao - $bo;
+        return ($a['rx'] === null ? 0 : $a['rx']) <=> ($b['rx'] === null ? 0 : $b['rx']);
+    });
+    $rows = array_slice($rows, 0, 300);
+    mobile_api_out(['ok' => true, 'live' => $live, 'stats' => ['total' => $total, 'online' => $on, 'offline' => $off, 'weak' => $bad], 'rows' => $rows]);
+}
+
+function mobile_api_onu_id()
+{
+    $id = trim((string) mobile_api_in('id'));
+    if ($id === '' || strlen($id) > 190 || !preg_match('/^[A-Za-z0-9._%\-]+$/', $id)) {
+        mobile_api_fail('Choose an ONU', 422);
+    }
+    return $id;
+}
+
+function mobile_api_onu_detail()
+{
+    $id = mobile_api_onu_id();
+    list($links, $rx) = mobile_api_onu_maps();
+    $docs = mobile_api_nbi('/devices?query=' . rawurlencode(json_encode(['_id' => $id])));
+    $row = null;
+    if (is_array($docs) && isset($docs[0]['_id'])) {
+        $row = mobile_api_onu_row($docs[0], $links, $rx);
+    }
+    $live = $row !== null;
+    if (!$row) {
+        if (!isset($links[$id]) && !isset($rx[$id])) {
+            mobile_api_fail('ONU not found', 404);
+        }
+        $row = ['id' => $id, 'model' => '', 'serial' => '', 'online' => null, 'last_inform' => '', 'rx' => isset($rx[$id]) ? mobile_api_onu_rx($rx[$id]) : null,
+            'ssid' => '', 'software' => '', 'customer' => isset($links[$id]) ? $links[$id] : null];
+    }
+    $row['rx_state'] = mobile_api_onu_state($row['rx']);
+    $hist = [];
+    foreach (mobile_api_rows('SELECT rx, tx, state, created_at FROM tbl_tr069_rx WHERE device_id = ? ORDER BY id DESC LIMIT 24', [$id]) as $h) {
+        $hist[] = ['rx' => mobile_api_onu_rx($h['rx']), 'tx' => $h['tx'] === null ? null : (float) $h['tx'], 'state' => $h['state'], 'time' => $h['created_at']];
+    }
+    $alerts = [];
+    foreach (mobile_api_rows('SELECT kind, message, created_at FROM tbl_tr069_alerts WHERE device_id = ? ORDER BY id DESC LIMIT 10', [$id]) as $a) {
+        $alerts[] = ['kind' => $a['kind'], 'message' => $a['message'], 'time' => $a['created_at']];
+    }
+    $tasks = [];
+    foreach (mobile_api_rows('SELECT task, status, detail, created_at FROM tbl_tr069_log WHERE device_id = ? ORDER BY id DESC LIMIT 8', [$id]) as $t) {
+        $tasks[] = ['task' => $t['task'], 'status' => $t['status'], 'detail' => $t['detail'], 'time' => $t['created_at']];
+    }
+    mobile_api_out(['ok' => true, 'live' => $live, 'onu' => $row, 'history' => $hist, 'alerts' => $alerts, 'tasks' => $tasks]);
+}
+
+function mobile_api_onu_reboot($s)
+{
+    $id = mobile_api_onu_id();
+    $res = mobile_api_nbi('/devices/' . rawurlencode($id) . '/tasks?connection_request', 'POST', ['name' => 'reboot']);
+    if ($res === null) {
+        mobile_api_fail('Could not reach GenieACS, the reboot was not sent', 502);
+    }
+    $queued = isset($res['_id']) && !empty($res['fault']) ? false : true;
+    try {
+        ORM::get_db()->prepare('INSERT INTO tbl_tr069_log (device_id, task, status, detail, created_at) VALUES (?,?,?,?,?)')
+            ->execute([$id, 'reboot', 'sent', 'Reboot from the app by ' . $s['access']['name'], date('Y-m-d H:i:s')]);
+    } catch (Throwable $e) {
+    }
+    mobile_api_out(['ok' => true, 'message' => $queued ? 'Reboot sent' : 'Reboot queued until the ONU next connects']);
+}
+
+/* ------------------------------------------------------------------ */
+/* data usage and FUP                                                  */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_bytes($b)
+{
+    $b = (float) $b;
+    foreach (['B', 'KB', 'MB', 'GB', 'TB'] as $i => $u) {
+        if ($b < 1024 || $u === 'TB') return ($i === 0 ? (string) (int) $b : number_format($b, 2)) . ' ' . $u;
+        $b /= 1024;
+    }
+    return '';
+}
+
+function mobile_api_fup_quota_bytes($rule)
+{
+    return (float) $rule['quota_mb'] * 1048576;
+}
+
+/** The FUP rule, plan and current throttle state for one username. */
+function mobile_api_fup_for($username)
+{
+    $out = ['rule' => null, 'throttled' => false, 'used_period' => 0.0, 'quota' => 0.0];
+    try {
+        $c = ORM::for_table('tbl_customers')->where('username', $username)->find_one();
+        $plan = null;
+        if ($c) {
+            $r = mobile_api_active_recharge($c['id']);
+            if ($r) $plan = ORM::for_table('tbl_plans')->where('name_plan', $r['namebp'])->find_one();
+        }
+        if ($plan) {
+            $rules = mobile_api_rows('SELECT * FROM tbl_fup_rules WHERE plan_id = ? AND enabled = 1 ORDER BY id LIMIT 1', [$plan['id']]);
+            if ($rules) {
+                $rule = $rules[0];
+                $out['rule'] = ['period' => $rule['period'], 'quota' => mobile_api_bytes(mobile_api_fup_quota_bytes($rule)), 'action' => $rule['action'], 'throttle_rate' => $rule['throttle_rate']];
+                $out['quota'] = mobile_api_fup_quota_bytes($rule);
+                $u = mobile_api_rows('SELECT bytes_in, bytes_out FROM tbl_fup_usage WHERE username = ? AND period = ? ORDER BY updated_at DESC LIMIT 1', [$username, $rule['period']]);
+                if ($u) $out['used_period'] = (float) $u[0]['bytes_in'] + (float) $u[0]['bytes_out'];
+            }
+        }
+        $st = mobile_api_rows('SELECT fup_profile, throttled_at FROM tbl_fup_state WHERE username = ? LIMIT 1', [$username]);
+        if ($st) {
+            $out['throttled'] = true;
+            $out['throttled_at'] = $st[0]['throttled_at'];
+        }
+    } catch (Throwable $e) {
+    }
+    return $out;
+}
+
+function mobile_api_usage_series($username, $days)
+{
+    $rows = mobile_api_rows('SELECT period_start, rx, tx FROM tbl_du_daily WHERE username = ? AND period_start >= ? ORDER BY period_start', [$username, date('Y-m-d 00:00:00', time() - ($days - 1) * 86400)]);
+    $series = [];
+    foreach ($rows as $r) {
+        $series[] = ['day' => substr($r['period_start'], 0, 10), 'down' => (float) $r['tx'], 'up' => (float) $r['rx'], 'down_text' => mobile_api_bytes($r['tx']), 'up_text' => mobile_api_bytes($r['rx'])];
+    }
+    return $series;
+}
+
+function mobile_api_usage_month($username)
+{
+    $m = mobile_api_rows('SELECT rx, tx FROM tbl_du_monthly WHERE username = ? AND period_start >= ? ORDER BY period_start DESC LIMIT 1', [$username, date('Y-m-01 00:00:00')]);
+    return $m ? ['down' => (float) $m[0]['tx'], 'up' => (float) $m[0]['rx']] : ['down' => 0.0, 'up' => 0.0];
+}
+
+function mobile_api_usage_pack($username)
+{
+    $f = mobile_api_fup_for($username);
+    $m = mobile_api_usage_month($username);
+    $pct = $f['quota'] > 0 ? min(100, (int) round($f['used_period'] / $f['quota'] * 100)) : null;
+    return [
+        'username' => $username,
+        'month_down' => mobile_api_bytes($m['down']), 'month_up' => mobile_api_bytes($m['up']),
+        'fup' => $f['rule'], 'used' => mobile_api_bytes($f['used_period']), 'percent' => $pct,
+        'throttled' => $f['throttled'], 'throttled_at' => isset($f['throttled_at']) ? $f['throttled_at'] : null,
+        'days' => mobile_api_usage_series($username, 14),
+    ];
+}
+
+function mobile_api_usage_overview()
+{
+    $top = [];
+    foreach (mobile_api_rows('SELECT username, rx, tx FROM tbl_du_monthly WHERE period_start >= ? ORDER BY (rx + tx) DESC LIMIT 20', [date('Y-m-01 00:00:00')]) as $r) {
+        $top[] = ['username' => $r['username'], 'down' => mobile_api_bytes($r['tx']), 'up' => mobile_api_bytes($r['rx']), 'total' => mobile_api_bytes((float) $r['rx'] + (float) $r['tx'])];
+    }
+    $throttled = [];
+    try {
+        foreach (mobile_api_rows('SELECT username, type, fup_profile, throttled_at FROM tbl_fup_state ORDER BY throttled_at DESC LIMIT 50') as $t) {
+            $throttled[] = ['username' => $t['username'], 'type' => $t['type'], 'profile' => $t['fup_profile'], 'since' => $t['throttled_at']];
+        }
+    } catch (Throwable $e) {
+    }
+    $rules = [];
+    try {
+        foreach (mobile_api_rows('SELECT r.period, r.quota_mb, r.action, r.throttle_rate, p.name_plan, r.plan_id FROM tbl_fup_rules r LEFT JOIN tbl_plans p ON p.id = r.plan_id WHERE r.enabled = 1 ORDER BY p.name_plan') as $r) {
+            $rules[] = ['plan' => $r['name_plan'] ?: 'Plan #' . $r['plan_id'], 'period' => $r['period'], 'quota' => mobile_api_bytes((float) $r['quota_mb'] * 1048576), 'action' => $r['action'], 'rate' => $r['throttle_rate']];
+        }
+    } catch (Throwable $e) {
+    }
+    $day = mobile_api_rows('SELECT COALESCE(SUM(rx),0) rx, COALESCE(SUM(tx),0) tx FROM tbl_du_daily WHERE period_start >= ?', [date('Y-m-d 00:00:00')]);
+    $mon = mobile_api_rows('SELECT COALESCE(SUM(rx),0) rx, COALESCE(SUM(tx),0) tx FROM tbl_du_monthly WHERE period_start >= ?', [date('Y-m-01 00:00:00')]);
+    mobile_api_out(['ok' => true,
+        'today' => ['down' => mobile_api_bytes($day[0]['tx']), 'up' => mobile_api_bytes($day[0]['rx'])],
+        'month' => ['down' => mobile_api_bytes($mon[0]['tx']), 'up' => mobile_api_bytes($mon[0]['rx'])],
+        'top' => $top, 'throttled' => $throttled, 'rules' => $rules]);
+}
+
+function mobile_api_usage_user()
+{
+    $u = trim((string) mobile_api_in('username'));
+    if ($u === '') mobile_api_fail('Choose a customer', 422);
+    mobile_api_out(['ok' => true, 'usage' => mobile_api_usage_pack($u)]);
+}
+
+function mobile_api_client_usage($s)
+{
+    $c = ORM::for_table('tbl_customers')->find_one($s['user_id']);
+    if (!$c) mobile_api_fail('Account not found', 404);
+    mobile_api_out(['ok' => true, 'usage' => mobile_api_usage_pack($c['username'])]);
 }

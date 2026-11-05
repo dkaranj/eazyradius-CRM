@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.ButtonDefaults
@@ -67,6 +68,7 @@ private fun applyAuth(a: Auth?) {
     if (a != null) {
         Api.base = a.base
         Api.token = a.token
+        Offline.owner = a.base.trimEnd('/') + "|" + a.name
     } else {
         Api.token = ""
     }
@@ -105,6 +107,12 @@ fun App() {
             } catch (e: Exception) {
             }
         }
+        LaunchedEffect(a.token) {
+            while (true) {
+                try { Offline.flush() } catch (e: Exception) { }
+                kotlinx.coroutines.delay(30000)
+            }
+        }
         RoleShell(
             a,
             onAuth = { updated ->
@@ -139,12 +147,15 @@ private fun staffTabs(a: Auth): List<NavTab> {
     if ("support" in m) out.add(NavTab("support", "Support"))
     if ("customers" in m) out.add(NavTab("customers", "Customers"))
     if ("payments" in m) out.add(NavTab("payments", "Payments"))
+    if ("onu" in m) out.add(NavTab("onu", "ONUs"))
+    if ("usage" in m) out.add(NavTab("usage", "Usage"))
     if ("my_hr" in m) out.add(NavTab("my_hr", "My HR"))
     if ("hr_employees" in m) out.add(NavTab("hr_employees", "Employees"))
     if ("hr_attendance" in m) out.add(NavTab("hr_attendance", "Attendance"))
     if ("hr_leave" in m) out.add(NavTab("hr_leave", "Leave"))
     if ("hr_payroll" in m) out.add(NavTab("hr_payroll", "Payroll"))
     if ("users" in m) out.add(NavTab("users", "Users"))
+    if ("audit" in m) out.add(NavTab("audit", "Audit"))
     if (a.isSuper) out.add(NavTab("access", "Access"))
     if (out.isEmpty()) out.add(NavTab("my_hr", "My HR"))
     return out
@@ -155,7 +166,7 @@ private fun staffTabs(a: Auth): List<NavTab> {
 fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
     val isClient = auth.role == "client"
     val tabs = if (isClient) {
-        listOf(NavTab("c_home", "Home"), NavTab("c_plans", "Plans"), NavTab("c_history", "History"))
+        listOf(NavTab("c_home", "Home"), NavTab("c_plans", "Plans"), NavTab("c_usage", "Usage"), NavTab("c_history", "History"))
     } else {
         staffTabs(auth)
     }
@@ -231,7 +242,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
         },
         bottomBar = {
             if (isClient) {
-                val icons = listOf(Icons.Default.Home, Icons.Default.ShoppingCart, Icons.Default.List)
+                val icons = listOf(Icons.Default.Home, Icons.Default.ShoppingCart, Icons.Default.Info, Icons.Default.List)
                 NavigationBar(containerColor = r.footer, contentColor = r.footerText) {
                     tabs.forEachIndexed { i, t ->
                         NavigationBarItem(
@@ -260,10 +271,13 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
             }
         }
     ) { pad ->
-        Box(Modifier.padding(pad).fillMaxSize()) {
+        Column(Modifier.padding(pad).fillMaxSize()) {
+          SyncBanner(onDone = { reload++ })
+          Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tabs[idx].key) {
                 "c_home" -> ClientHome(reload)
                 "c_plans" -> ClientPlans(reload)
+                "c_usage" -> ClientUsage(reload)
                 "c_history" -> ClientHistory(reload)
                 "home" -> TechHome(reload)
                 "dashboard" -> AdminDashboard(reload)
@@ -272,6 +286,9 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                 "support" -> OpsList("ticket", reload)
                 "customers" -> AdminCustomers(reload)
                 "payments" -> AdminPayments(reload)
+                "onu" -> OnuScreen(reload)
+                "usage" -> UsageScreen(reload)
+                "audit" -> AuditScreen(reload)
                 "my_hr" -> MyHr(reload)
                 "hr_employees" -> HrEmployees(reload)
                 "hr_attendance" -> HrAttendance(reload)
@@ -280,7 +297,9 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                 "users" -> AdminUsers(reload)
                 "access" -> AdminAccess(reload)
             }
+          }
         }
     }
     if (showTheme) ThemeDialog { showTheme = false }
+
 }
