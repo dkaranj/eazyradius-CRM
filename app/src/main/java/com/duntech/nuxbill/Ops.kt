@@ -245,6 +245,7 @@ private fun OpsCard(
     var assigning by remember { mutableStateOf(false) }
     var showClient by remember { mutableStateOf(false) }
     var showVisit by remember { mutableStateOf(false) }
+    var showComments by remember { mutableStateOf(false) }
     val id = item.optInt("id").toString()
     val phone = item.optString("phone")
     val address = item.optString("address")
@@ -303,6 +304,7 @@ private fun OpsCard(
                     OutlinedButton(onClick = { showClient = true }) { Text("Client") }
                 }
                 OutlinedButton(onClick = { showVisit = true }) { Text("Visit") }
+                if (entity == "ticket") OutlinedButton(onClick = { showComments = true }) { Text("Comments") }
                 if (address.isNotBlank()) {
                     OutlinedButton(onClick = {
                         val i = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(address)))
@@ -329,6 +331,7 @@ private fun OpsCard(
         val u = item.optString("customer_username")
         Customer360Dialog(if (u.isNotBlank()) mapOf("username" to u) else mapOf("phone" to phone), onClose = { showClient = false })
     }
+    if (showComments) CommentsDialog(item.optInt("id"), item.optString("title"), staff = true) { showComments = false }
     if (showVisit) VisitDialog(entity, item.optInt("id"), item.optString("title")) { showVisit = false }
 
     if (assigning) {

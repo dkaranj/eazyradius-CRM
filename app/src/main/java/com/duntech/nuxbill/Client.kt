@@ -3,6 +3,7 @@ package com.duntech.nuxbill
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,14 +39,24 @@ import org.json.JSONObject
 
 @Composable
 fun ClientHome(reload: Int) {
-    Remote(reload, load = { Api.call("client_home") }) { j ->
+    var homeBump by remember { mutableIntStateOf(0) }
+    var showStk by remember { mutableStateOf(false) }
+    var showWifi by remember { mutableStateOf(false) }
+    var phoneNo by remember { mutableStateOf("") }
+    Remote(listOf(reload, homeBump), load = { Api.call("client_home") }) { j ->
         val c = j.getJSONObject("client")
         val plan = c.optJSONObject("plan")
+        phoneNo = c.optString("phone")
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Hello, " + c.optString("name"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            NoticeBanner(reload)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { showStk = true }, modifier = Modifier.weight(1f)) { Text("Top up (M-Pesa)") }
+                OutlinedButton(onClick = { showWifi = true }, modifier = Modifier.weight(1f)) { Text("My Wi-Fi") }
+            }
             StatCard("Wallet balance", c.optString("balance"), "info", Modifier.fillMaxWidth())
             if (plan != null) {
                 val active = plan.optBoolean("active")
@@ -69,6 +81,8 @@ fun ClientHome(reload: Int) {
             }
         }
     }
+    if (showStk) StkDialog(phoneNo) { showStk = false; homeBump++ }
+    if (showWifi) WifiDialog { showWifi = false }
 }
 
 @Composable

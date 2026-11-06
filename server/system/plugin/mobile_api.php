@@ -31,6 +31,10 @@ function mobile_api()
             mobile_api_login();
         }
 
+        if ($a === 'mpesa_cb') {
+            mobile_api_mpesa_cb();
+        }
+
         $s = mobile_api_auth();
 
         // offline queue: an action replayed with an op_id we already applied is acknowledged, not applied twice
@@ -170,6 +174,61 @@ function mobile_api()
             case 'report_export':
                 mobile_api_mod($s, 'reports');
                 mobile_api_report_export();
+
+            // ---- client extras ----
+            case 'client_stk':
+                mobile_api_client_only($s);
+                mobile_api_client_stk($s);
+            case 'client_stk_status':
+                mobile_api_client_only($s);
+                mobile_api_client_stk_status($s);
+            case 'client_tickets':
+                mobile_api_client_only($s);
+                mobile_api_client_tickets($s);
+            case 'client_ticket_create':
+                mobile_api_client_only($s);
+                mobile_api_client_ticket_create($s);
+            case 'client_ticket_comments':
+                mobile_api_client_only($s);
+                mobile_api_client_ticket_comments($s);
+            case 'client_ticket_comment_add':
+                mobile_api_client_only($s);
+                mobile_api_client_ticket_comment_add($s);
+            case 'client_notices':
+                mobile_api_client_only($s);
+                mobile_api_client_notices();
+            case 'client_wifi_get':
+                mobile_api_client_only($s);
+                mobile_api_client_wifi_get($s);
+            case 'client_wifi_set':
+                mobile_api_client_only($s);
+                mobile_api_client_wifi_set($s);
+
+            // ---- notices (staff) ----
+            case 'notice_list':
+                mobile_api_mod($s, 'notices');
+                mobile_api_notice_list();
+            case 'notice_save':
+                mobile_api_mod($s, 'notices');
+                mobile_api_notice_save($s);
+            case 'notice_end':
+                mobile_api_mod($s, 'notices');
+                mobile_api_notice_end($s);
+
+            // ---- ticket comments (staff) ----
+            case 'ticket_comments':
+                mobile_api_ticket_comments($s);
+            case 'ticket_comment_add':
+                mobile_api_ticket_comment_add($s);
+
+            // ---- security ----
+            case 'sessions_list':
+                mobile_api_sessions_list($s);
+            case 'session_revoke':
+                mobile_api_session_revoke($s);
+            case 'admin_user_logout':
+                mobile_api_staff($s);
+                mobile_api_admin_user_logout($s);
 
             // ---- installation payments ----
             case 'inst_pay_list':
@@ -389,6 +448,58 @@ function mobile_api_boot()
                 KEY idx_item (entity, entity_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
+        'tbl_mobile_comments' => [
+            ['ticket_id', 'author_type', 'author_id', 'author_name', 'body', 'internal', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_comments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ticket_id INT NOT NULL,
+                author_type VARCHAR(8) NOT NULL,
+                author_id INT NOT NULL DEFAULT 0,
+                author_name VARCHAR(100) NULL,
+                body VARCHAR(1000) NOT NULL,
+                internal TINYINT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                KEY idx_ticket (ticket_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_notices' => [
+            ['title', 'body', 'severity', 'active', 'ends_at', 'created_by', 'created_by_name', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_notices (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(120) NOT NULL,
+                body VARCHAR(500) NULL,
+                severity VARCHAR(10) NOT NULL DEFAULT 'info',
+                active TINYINT NOT NULL DEFAULT 1,
+                ends_at DATETIME NULL,
+                created_by INT NOT NULL DEFAULT 0,
+                created_by_name VARCHAR(100) NULL,
+                created_at DATETIME NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_stk' => [
+            ['customer_id', 'phone', 'amount', 'checkout_id', 'status', 'result_desc', 'created_at', 'updated_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_stk (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT NOT NULL,
+                phone VARCHAR(20) NOT NULL,
+                amount INT NOT NULL,
+                checkout_id VARCHAR(64) NULL,
+                status VARCHAR(12) NOT NULL DEFAULT 'pending',
+                result_desc VARCHAR(200) NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NULL,
+                KEY idx_cust (customer_id),
+                KEY idx_checkout (checkout_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_token_info' => [
+            ['token_id', 'device', 'ip'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_token_info (
+                token_id INT NOT NULL PRIMARY KEY,
+                device VARCHAR(80) NULL,
+                ip VARCHAR(45) NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
         'tbl_mobile_ops' => [
             ['op_id', 'user_id', 'action', 'created_at'],
             "CREATE TABLE IF NOT EXISTS tbl_mobile_ops (
@@ -457,6 +568,18 @@ function mobile_api_login()
         mobile_api_fail('Enter username and password', 422);
     }
 
+    // slow down password guessing: too many recent failures for this name or from this address
+    try {
+        $since = date('Y-m-d H:i:s', time() - 900);
+        $byName = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_audit WHERE action = 'login_failed' AND user_name = ? AND created_at > ?", [mb_substr($u, 0, 100), $since]);
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+        $byIp = $ip === '' ? [['n' => 0]] : mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_audit WHERE action = 'login_failed' AND ip = ? AND created_at > ?", [$ip, $since]);
+        if ((int) $byName[0]['n'] >= 8 || (int) $byIp[0]['n'] >= 30) {
+            mobile_api_fail('Too many failed attempts. Try again in 15 minutes.', 429);
+        }
+    } catch (Throwable $e) {
+    }
+
     $role = null;
     $uid = 0;
     $name = '';
@@ -494,6 +617,11 @@ function mobile_api_login()
     $t->created_at = date('Y-m-d H:i:s');
     $t->last_used = date('Y-m-d H:i:s');
     $t->save();
+    try {
+        ORM::get_db()->prepare('INSERT INTO tbl_mobile_token_info (token_id, device, ip) VALUES (?,?,?)')
+            ->execute([(int) $t['id'], mb_substr(trim((string) mobile_api_in('device')), 0, 80), isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '']);
+    } catch (Throwable $e) {
+    }
 
     $out = ['ok' => true, 'token' => $token, 'role' => $role, 'name' => $name, 'user_type' => ''];
     if ($role === 'staff') {
@@ -1787,6 +1915,7 @@ function mobile_api_catalog()
         ['key' => 'hr_payroll', 'label' => 'Payroll (view only)', 'group' => 'HR'],
         ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
         ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
+        ['key' => 'notices', 'label' => 'Outage notices to customers', 'group' => 'Network'],
         ['key' => 'audit', 'label' => 'Audit log', 'group' => 'Admin'],
         ['key' => 'users', 'label' => 'Staff users', 'group' => 'Admin'],
     ];
@@ -2496,7 +2625,7 @@ function mobile_api_rows($sql, $args = [])
 /** Actions the phone may queue while offline and replay later. Each is safe to receive twice thanks to op_id. */
 function mobile_api_queueable()
 {
-    return ['ops_create', 'ops_update', 'hr_clock', 'hr_leave_request', 'checkin', 'store_request_create', 'store_use'];
+    return ['ops_create', 'ops_update', 'hr_clock', 'hr_leave_request', 'checkin', 'store_request_create', 'store_use', 'ticket_comment_add'];
 }
 
 /** Actions that change something, and so belong in the audit log. */
@@ -2510,6 +2639,8 @@ function mobile_api_audited()
         'hr_employee_save' => 'employee_save', 'hr_leave_decide' => 'leave_decide',
         'onu_reboot' => 'onu_reboot', 'logout' => 'logout', 'photo_add' => 'photo', 'checkin' => 'checkin',
         'store_request_create' => 'stock_request', 'store_request_decide' => 'stock_decide', 'store_receive' => 'stock_receive', 'store_use' => 'stock_use',
+        'client_stk' => 'stk_push', 'client_ticket_create' => 'client_ticket', 'client_wifi_set' => 'wifi_change', 'notice_save' => 'notice', 'notice_end' => 'notice_end',
+        'ticket_comment_add' => 'comment', 'client_ticket_comment_add' => 'comment', 'session_revoke' => 'session_revoke', 'admin_user_logout' => 'user_logout',
         'inst_pay_record' => 'install_payment', 'inst_pay_waive' => 'install_waive',
     ];
 }
@@ -3090,7 +3221,7 @@ function mobile_api_notify_poll($s)
     $items = [];
     $maxId = 0;
     if ($s['role'] !== 'staff') {
-        mobile_api_out(['ok' => true, 'items' => [], 'max_id' => 0, 'now' => $now]);
+        mobile_api_client_poll($s, $now);
     }
     $uid = (int) $s['user_id'];
     $sinceId = (int) mobile_api_in('since_id', 0);
@@ -4076,4 +4207,514 @@ function mobile_api_report_export()
         mobile_api_fail('Choose what to export', 422);
     }
     mobile_api_out(['ok' => true, 'filename' => 'eazyradius-' . $kind . '-' . $from . '_' . $to . '.csv', 'rows' => count($rows) - 1, 'csv' => mobile_api_csv($rows)]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* security: sessions and remote logout                                */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_token_roles($s)
+{
+    return $s['role'] === 'client' ? ['client'] : ['admin', 'technician', 'staff'];
+}
+
+function mobile_api_sessions_list($s)
+{
+    $in = implode(',', array_fill(0, count(mobile_api_token_roles($s)), '?'));
+    $rows = mobile_api_rows('SELECT t.id, t.created_at, t.last_used, i.device, i.ip FROM tbl_mobile_tokens t LEFT JOIN tbl_mobile_token_info i ON i.token_id = t.id
+        WHERE t.user_id = ? AND t.role IN (' . $in . ') ORDER BY t.last_used DESC LIMIT 20', array_merge([(int) $s['user_id']], mobile_api_token_roles($s)));
+    $out = [];
+    foreach ($rows as $r) {
+        $out[] = ['id' => (int) $r['id'], 'device' => $r['device'] ?: 'Unknown device', 'ip' => (string) $r['ip'], 'signed_in' => $r['created_at'],
+            'last_used' => $r['last_used'], 'current' => (int) $r['id'] === (int) $s['token_id']];
+    }
+    mobile_api_out(['ok' => true, 'sessions' => $out]);
+}
+
+function mobile_api_session_revoke($s)
+{
+    $roles = mobile_api_token_roles($s);
+    $in = implode(',', array_fill(0, count($roles), '?'));
+    if ((string) mobile_api_in('others') === '1') {
+        $st = ORM::get_db()->prepare('DELETE FROM tbl_mobile_tokens WHERE user_id = ? AND role IN (' . $in . ') AND id <> ?');
+        $st->execute(array_merge([(int) $s['user_id']], $roles, [(int) $s['token_id']]));
+        mobile_api_out(['ok' => true, 'message' => 'Signed out of ' . $st->rowCount() . ' other device(s)']);
+    }
+    $id = (int) mobile_api_in('id');
+    if ($id === (int) $s['token_id']) mobile_api_fail('Use Logout to sign out of this phone', 422);
+    $st = ORM::get_db()->prepare('DELETE FROM tbl_mobile_tokens WHERE id = ? AND user_id = ? AND role IN (' . $in . ')');
+    $st->execute(array_merge([$id, (int) $s['user_id']], $roles));
+    if ($st->rowCount() === 0) mobile_api_fail('Session not found', 404);
+    mobile_api_out(['ok' => true, 'message' => 'Device signed out']);
+}
+
+/** An admin signs a user out of every phone (a lost phone, a leaver). */
+function mobile_api_admin_user_logout($s)
+{
+    $actor = mobile_api_actor($s);
+    mobile_api_need_manager($actor);
+    $id = (int) mobile_api_in('id');
+    $u = ORM::for_table('tbl_users')->find_one($id);
+    if (!$u) mobile_api_fail('User not found', 404);
+    if ($id !== (int) $actor['id'] && !mobile_api_can_manage($actor, $u['user_type'])) mobile_api_fail('You cannot sign this user out', 403);
+    $n = count(mobile_api_rows("SELECT id FROM tbl_mobile_tokens WHERE user_id = ? AND role IN ('admin','technician','staff')", [$id]));
+    mobile_api_revoke_staff_tokens($id);
+    mobile_api_out(['ok' => true, 'message' => ($u['fullname'] ?: $u['username']) . ' signed out of ' . $n . ' device(s)']);
+}
+
+/* ------------------------------------------------------------------ */
+/* ticket comments                                                     */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_ticket_row_for_staff($s)
+{
+    mobile_api_staff($s);
+    mobile_api_ops_gate($s, 'ticket');
+    $meta = mobile_api_ops_meta('ticket');
+    if (!$meta) mobile_api_fail('Table not found', 404);
+    $row = ORM::for_table($meta['table'])->find_one((int) mobile_api_in('id'));
+    if (!$row) mobile_api_fail('Ticket not found', 404);
+    $uid = mobile_api_scope_uid($s);
+    if ($uid && !mobile_api_ops_is_mine($meta, $row->as_array(), $uid)) mobile_api_fail('This ticket is not assigned to you', 403);
+    return [$meta, $row];
+}
+
+function mobile_api_comment_rows($ticketId, $withInternal)
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT id, author_type, author_name, body, internal, created_at FROM tbl_mobile_comments WHERE ticket_id = ?' . ($withInternal ? '' : ' AND internal = 0') . ' ORDER BY id', [(int) $ticketId]) as $c) {
+        $out[] = ['id' => (int) $c['id'], 'by' => $c['author_name'], 'type' => $c['author_type'], 'text' => $c['body'], 'internal' => (bool) $c['internal'], 'time' => $c['created_at']];
+    }
+    return $out;
+}
+
+function mobile_api_ticket_customer_username($desc)
+{
+    return preg_match('/^Username:\s*(\S+)/mi', (string) $desc, $m) ? $m[1] : '';
+}
+
+function mobile_api_ticket_comments($s)
+{
+    list($meta, $row) = mobile_api_ticket_row_for_staff($s);
+    $it = mobile_api_ops_item($meta, $row->as_array());
+    mobile_api_out(['ok' => true, 'ticket' => ['id' => $it['id'], 'title' => $it['title'], 'status' => $it['status'], 'customer' => $it['customer_username']], 'comments' => mobile_api_comment_rows($row['id'], true)]);
+}
+
+function mobile_api_ticket_comment_add($s)
+{
+    list($meta, $row) = mobile_api_ticket_row_for_staff($s);
+    $body = trim((string) mobile_api_in('body'));
+    if ($body === '') mobile_api_fail('Write a comment first', 422);
+    if (mb_strlen($body) > 1000) mobile_api_fail('That comment is too long (1000 characters)', 422);
+    $internal = (string) mobile_api_in('internal') === '1' ? 1 : 0;
+    $now = date('Y-m-d H:i:s');
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_comments (ticket_id, author_type, author_id, author_name, body, internal, created_at) VALUES (?,?,?,?,?,?,?)')
+        ->execute([(int) $row['id'], 'staff', (int) $s['user_id'], $s['access']['name'], $body, $internal, $now]);
+    if ($meta['map']['updated']) {
+        $row->set($meta['map']['updated'], $now);
+        $row->save();
+    }
+    $it = mobile_api_ops_item($meta, $row->as_array());
+    if ($it['assignee_id'] > 0 && $it['assignee_id'] !== (int) $s['user_id']) {
+        mobile_api_notify($it['assignee_id'], 'comment', 'New comment on a ticket', $s['access']['name'] . ': ' . mb_substr($body, 0, 120), 'ticket', (int) $row['id']);
+    }
+    if (!$internal && $it['customer_username'] !== '') {
+        $c = ORM::for_table('tbl_customers')->where('username', $it['customer_username'])->find_one();
+        if ($c) mobile_api_notify(-(int) $c['id'], 'reply', 'Reply on your ticket', mb_substr($body, 0, 150), 'ticket', (int) $row['id']);
+    }
+    mobile_api_out(['ok' => true, 'message' => $internal ? 'Internal note saved' : 'Comment sent']);
+}
+
+/* ------------------------------------------------------------------ */
+/* outage notices                                                      */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_notice_list()
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT id, title, body, severity, active, ends_at, created_by_name, created_at FROM tbl_mobile_notices ORDER BY id DESC LIMIT 40') as $n) {
+        $live = (int) $n['active'] === 1 && ($n['ends_at'] === null || strtotime($n['ends_at']) > time());
+        $out[] = ['id' => (int) $n['id'], 'title' => $n['title'], 'body' => (string) $n['body'], 'severity' => $n['severity'], 'live' => $live,
+            'ends_at' => $n['ends_at'], 'by' => $n['created_by_name'], 'created' => $n['created_at']];
+    }
+    mobile_api_out(['ok' => true, 'notices' => $out]);
+}
+
+function mobile_api_notice_save($s)
+{
+    $title = trim((string) mobile_api_in('title'));
+    $body = trim((string) mobile_api_in('body'));
+    $sev = (string) mobile_api_in('severity');
+    if (!in_array($sev, ['info', 'warning', 'outage'], true)) $sev = 'info';
+    if ($title === '') mobile_api_fail('Enter a title', 422);
+    $hours = (int) mobile_api_in('hours', 0);
+    $ends = $hours > 0 ? date('Y-m-d H:i:s', time() + min($hours, 24 * 30) * 3600) : null;
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_notices (title, body, severity, active, ends_at, created_by, created_by_name, created_at) VALUES (?,?,?,?,?,?,?,?)')
+        ->execute([mb_substr($title, 0, 120), mb_substr($body, 0, 500), $sev, 1, $ends, (int) $s['user_id'], $s['access']['name'], date('Y-m-d H:i:s')]);
+    mobile_api_out(['ok' => true, 'id' => (int) ORM::get_db()->lastInsertId(), 'message' => 'Notice published to customers']);
+}
+
+function mobile_api_notice_end($s)
+{
+    $st = ORM::get_db()->prepare('UPDATE tbl_mobile_notices SET active = 0 WHERE id = ?');
+    $st->execute([(int) mobile_api_in('id')]);
+    mobile_api_out(['ok' => true, 'message' => 'Notice ended']);
+}
+
+function mobile_api_live_notices()
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT id, title, body, severity, created_at FROM tbl_mobile_notices WHERE active = 1 AND (ends_at IS NULL OR ends_at > ?) ORDER BY id DESC LIMIT 5', [date('Y-m-d H:i:s')]) as $n) {
+        $out[] = ['id' => (int) $n['id'], 'title' => $n['title'], 'body' => (string) $n['body'], 'severity' => $n['severity'], 'time' => $n['created_at']];
+    }
+    return $out;
+}
+
+function mobile_api_client_notices()
+{
+    mobile_api_out(['ok' => true, 'notices' => mobile_api_live_notices()]);
+}
+
+/** Customers are alerted to new notices and to replies on their tickets (their notify rows use the negative customer id). */
+function mobile_api_client_poll($s, $now)
+{
+    $cid = (int) $s['user_id'];
+    $sinceId = (int) mobile_api_in('since_id', 0);
+    $sinceTs = (int) mobile_api_in('since_ts', 0);
+    $last = mobile_api_rows('SELECT MAX(id) m FROM tbl_mobile_notify WHERE user_id = ?', [-$cid]);
+    $maxId = $last && $last[0]['m'] ? (int) $last[0]['m'] : 0;
+    $items = [];
+    if (!($sinceId === 0 && $sinceTs === 0)) {
+        foreach (mobile_api_rows('SELECT id, kind, title, body, entity, entity_id, created_at FROM tbl_mobile_notify WHERE user_id = ? AND id > ? ORDER BY id LIMIT 20', [-$cid, $sinceId]) as $n) {
+            $items[] = ['key' => 'n' . $n['id'], 'kind' => $n['kind'], 'title' => $n['title'], 'body' => $n['body'], 'entity' => $n['entity'], 'id' => $n['entity_id'], 'time' => $n['created_at']];
+        }
+        foreach (mobile_api_rows('SELECT id, title, body, severity, created_at FROM tbl_mobile_notices WHERE active = 1 AND created_at > ? ORDER BY id LIMIT 5', [date('Y-m-d H:i:s', $sinceTs)]) as $n) {
+            $items[] = ['key' => 'x' . $n['id'], 'kind' => 'notice', 'title' => ($n['severity'] === 'outage' ? 'Network outage: ' : 'Notice: ') . $n['title'], 'body' => $n['body'], 'entity' => 'notice', 'id' => (int) $n['id'], 'time' => $n['created_at']];
+        }
+    }
+    mobile_api_out(['ok' => true, 'items' => $items, 'max_id' => $maxId, 'now' => $now]);
+}
+
+/* ------------------------------------------------------------------ */
+/* client: tickets                                                     */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_client_row($s)
+{
+    $c = ORM::for_table('tbl_customers')->find_one($s['user_id']);
+    if (!$c) mobile_api_fail('Account not found', 404);
+    return $c;
+}
+
+function mobile_api_client_tickets($s)
+{
+    $c = mobile_api_client_row($s);
+    $tm = mobile_api_ops_meta('ticket');
+    $out = [];
+    if ($tm && $tm['map']['notes']) {
+        $orm = ORM::for_table($tm['table'])->where_raw('`' . $tm['map']['notes'] . '` LIKE ?', ['%Username: ' . $c['username'] . '%'])->order_by_desc('id')->limit(30);
+        foreach ($orm->find_many() as $t) {
+            if (strcasecmp(mobile_api_ticket_customer_username($t[$tm['map']['notes']]), $c['username']) !== 0) continue;
+            $it = mobile_api_ops_item($tm, $t->as_array());
+            $n = mobile_api_rows('SELECT COUNT(*) n FROM tbl_mobile_comments WHERE ticket_id = ? AND internal = 0', [(int) $t['id']]);
+            $out[] = ['id' => $it['id'], 'title' => $it['title'], 'status' => $it['status'], 'created' => $it['created'], 'comments' => (int) $n[0]['n']];
+        }
+    }
+    mobile_api_out(['ok' => true, 'tickets' => $out]);
+}
+
+function mobile_api_client_ticket_create($s)
+{
+    $c = mobile_api_client_row($s);
+    $tm = mobile_api_ops_meta('ticket');
+    if (!$tm || $tm['fallback'] || !$tm['map']['notes']) mobile_api_fail('Support tickets are not available right now', 503);
+    $title = trim((string) mobile_api_in('title'));
+    $notes = trim((string) mobile_api_in('notes'));
+    if ($title === '') mobile_api_fail('Tell us what the problem is', 422);
+    $recent = mobile_api_rows('SELECT COUNT(*) n FROM `' . $tm['table'] . '` WHERE `' . $tm['map']['notes'] . '` LIKE ? AND `' . $tm['map']['created'] . '` > ?', ['%Username: ' . $c['username'] . '%', date('Y-m-d H:i:s', time() - 3600)]);
+    if ((int) $recent[0]['n'] >= 3) mobile_api_fail('You have sent several tickets just now. Please wait, we are on it.', 429);
+    $now = date('Y-m-d H:i:s');
+    $desc = 'Customer: ' . ($c['fullname'] ?: $c['username']) . ' (' . $c['phonenumber'] . ')';
+    if (trim((string) $c['address']) !== '') $desc .= "\nLocation: " . trim($c['address']);
+    $desc .= "\nUsername: " . $c['username'] . "\nRaised from the customer app";
+    if ($notes !== '') $desc .= "\n\n" . mb_substr($notes, 0, 1000);
+    $m = $tm['map'];
+    $r = ORM::for_table($tm['table'])->create();
+    $r->set($m['title'], mb_substr($title, 0, 190));
+    $r->set($m['notes'], $desc);
+    if ($m['status']) $r->set($m['status'], 'open');
+    if ($m['priority']) $r->set($m['priority'], 'Medium');
+    if ($m['created']) $r->set($m['created'], $now);
+    if ($m['updated']) $r->set($m['updated'], $now);
+    $cat = (int) mobile_api_in('category_id', 0);
+    if ($cat > 0 && isset($tm['cols']['category_id']) && mobile_api_rows('SELECT id FROM tbl_support_categories WHERE id = ?', [$cat])) $r->set('category_id', $cat);
+    if (isset($tm['cols']['created_by'])) $r->set('created_by', 0);
+    if (isset($tm['cols']['log'])) $r->set('log', date('Y-m-d H:i') . ' - ' . $c['username'] . ' raised the ticket from the customer app');
+    $data = $r->as_array();
+    foreach ($tm['cols'] as $col) {
+        $f = $col['Field'];
+        if ($col['Null'] === 'NO' && $col['Default'] === null && strpos($col['Extra'], 'auto_increment') === false && !array_key_exists($f, $data)) {
+            if (stripos($col['Type'], 'int') !== false) $r->set($f, 0);
+            elseif (stripos($col['Type'], 'date') !== false || stripos($col['Type'], 'timestamp') !== false) $r->set($f, $now);
+            else $r->set($f, '');
+        }
+    }
+    $r->save();
+    mobile_api_notify_managers('support', true, 'new_ticket', 'New customer ticket needs assigning', ($c['fullname'] ?: $c['username']) . ': ' . mb_substr($title, 0, 100), 'ticket', (int) $r['id'], 0);
+    mobile_api_out(['ok' => true, 'id' => (int) $r['id'], 'message' => 'Ticket sent. We will get back to you.']);
+}
+
+function mobile_api_client_ticket_row($s)
+{
+    $c = mobile_api_client_row($s);
+    $tm = mobile_api_ops_meta('ticket');
+    if (!$tm || !$tm['map']['notes']) mobile_api_fail('Not found', 404);
+    $row = ORM::for_table($tm['table'])->find_one((int) mobile_api_in('id'));
+    if (!$row || strcasecmp(mobile_api_ticket_customer_username($row[$tm['map']['notes']]), $c['username']) !== 0) mobile_api_fail('Ticket not found', 404);
+    return [$c, $tm, $row];
+}
+
+function mobile_api_client_ticket_comments($s)
+{
+    list($c, $tm, $row) = mobile_api_client_ticket_row($s);
+    $it = mobile_api_ops_item($tm, $row->as_array());
+    mobile_api_out(['ok' => true, 'ticket' => ['id' => $it['id'], 'title' => $it['title'], 'status' => $it['status']], 'comments' => mobile_api_comment_rows($row['id'], false)]);
+}
+
+function mobile_api_client_ticket_comment_add($s)
+{
+    list($c, $tm, $row) = mobile_api_client_ticket_row($s);
+    $body = trim((string) mobile_api_in('body'));
+    if ($body === '') mobile_api_fail('Write a message first', 422);
+    if (mb_strlen($body) > 1000) mobile_api_fail('That message is too long (1000 characters)', 422);
+    $recent = mobile_api_rows('SELECT COUNT(*) n FROM tbl_mobile_comments WHERE author_type = "client" AND author_id = ? AND created_at > ?', [(int) $c['id'], date('Y-m-d H:i:s', time() - 600)]);
+    if ((int) $recent[0]['n'] >= 10) mobile_api_fail('Too many messages in a short time. Please wait a few minutes.', 429);
+    $now = date('Y-m-d H:i:s');
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_comments (ticket_id, author_type, author_id, author_name, body, internal, created_at) VALUES (?,?,?,?,?,?,?)')
+        ->execute([(int) $row['id'], 'client', (int) $c['id'], $c['fullname'] ?: $c['username'], $body, 0, $now]);
+    if ($tm['map']['updated']) {
+        $row->set($tm['map']['updated'], $now);
+        $row->save();
+    }
+    $it = mobile_api_ops_item($tm, $row->as_array());
+    $text = ($c['fullname'] ?: $c['username']) . ': ' . mb_substr($body, 0, 120);
+    if ($it['assignee_id'] > 0) mobile_api_notify($it['assignee_id'], 'comment', 'Customer replied on a ticket', $text, 'ticket', (int) $row['id']);
+    else mobile_api_notify_managers('support', true, 'comment', 'Customer replied on an unassigned ticket', $text, 'ticket', (int) $row['id'], 0);
+    mobile_api_out(['ok' => true, 'message' => 'Sent']);
+}
+
+/* ------------------------------------------------------------------ */
+/* client: Wi-Fi name and password through TR-069                       */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_client_device($s)
+{
+    $rows = mobile_api_rows('SELECT device_id FROM tbl_tr069_links WHERE customer_id = ? LIMIT 1', [(int) $s['user_id']]);
+    return $rows ? $rows[0]['device_id'] : null;
+}
+
+/** The Wi-Fi parameter paths this router uses, found from its own data model. */
+function mobile_api_wifi_paths($doc)
+{
+    if (isset($doc['InternetGatewayDevice'])) {
+        $base = 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1';
+        $key = mobile_api_nbi_val($doc, $base . '.PreSharedKey.1.KeyPassphrase') !== null ? $base . '.PreSharedKey.1.KeyPassphrase' : $base . '.PreSharedKey.1.PreSharedKey';
+        return ['ssid' => $base . '.SSID', 'key' => $key];
+    }
+    if (isset($doc['Device'])) {
+        return ['ssid' => 'Device.WiFi.SSID.1.SSID', 'key' => 'Device.WiFi.AccessPoint.1.Security.KeyPassphrase'];
+    }
+    return null;
+}
+
+function mobile_api_wifi_doc($id)
+{
+    $proj = 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.1,Device.WiFi.SSID.1,Device.WiFi.AccessPoint.1.Security';
+    $docs = mobile_api_nbi('/devices?query=' . rawurlencode(json_encode(['_id' => $id])) . '&projection=' . rawurlencode($proj));
+    return (is_array($docs) && isset($docs[0])) ? $docs[0] : null;
+}
+
+function mobile_api_client_wifi_get($s)
+{
+    $id = mobile_api_client_device($s);
+    if (!$id) mobile_api_out(['ok' => true, 'linked' => false, 'message' => 'Your router is not linked to your account yet. Contact support.']);
+    $doc = mobile_api_wifi_doc($id);
+    $paths = $doc ? mobile_api_wifi_paths($doc) : null;
+    mobile_api_out(['ok' => true, 'linked' => true, 'reachable' => $doc !== null, 'supported' => $paths !== null,
+        'ssid' => $paths ? (string) mobile_api_nbi_val($doc, $paths['ssid']) : '']);
+}
+
+function mobile_api_client_wifi_set($s)
+{
+    $id = mobile_api_client_device($s);
+    if (!$id) mobile_api_fail('Your router is not linked to your account yet. Contact support.', 404);
+    $ssid = trim((string) mobile_api_in('ssid'));
+    $pass = (string) mobile_api_in('password');
+    if ($ssid === '' && $pass === '') mobile_api_fail('Enter a new Wi-Fi name or password', 422);
+    if ($ssid !== '' && (mb_strlen($ssid) > 32 || preg_match('/[\x00-\x1f\x7f]/', $ssid))) mobile_api_fail('The Wi-Fi name must be 1 to 32 characters', 422);
+    if ($pass !== '' && (strlen($pass) < 8 || strlen($pass) > 63 || preg_match('/[\x00-\x1f\x7f]/', $pass))) mobile_api_fail('The password must be 8 to 63 characters', 422);
+    // one change at a time: a router reconnects its clients every time this runs
+    $last = mobile_api_rows("SELECT created_at FROM tbl_mobile_audit WHERE user_id = ? AND action = 'wifi_change' AND details NOT LIKE 'FAILED%' ORDER BY id DESC LIMIT 1", [(int) $s['user_id']]);
+    if ($last && strtotime($last[0]['created_at']) > time() - 300) mobile_api_fail('You changed your Wi-Fi a moment ago. Wait 5 minutes before changing it again.', 429);
+    $doc = mobile_api_wifi_doc($id);
+    if ($doc === null) mobile_api_fail('We could not reach your router right now. Try again later.', 502);
+    $paths = mobile_api_wifi_paths($doc);
+    if (!$paths) mobile_api_fail('This router model cannot be changed from the app. Contact support.', 422);
+    $vals = [];
+    if ($ssid !== '') $vals[] = [$paths['ssid'], $ssid, 'xsd:string'];
+    if ($pass !== '') $vals[] = [$paths['key'], $pass, 'xsd:string'];
+    $res = mobile_api_nbi('/devices/' . rawurlencode($id) . '/tasks?connection_request', 'POST', ['name' => 'setParameterValues', 'parameterValues' => $vals]);
+    if ($res === null) mobile_api_fail('The router did not accept the change. Try again later.', 502);
+    try {
+        ORM::get_db()->prepare('INSERT INTO tbl_tr069_log (device_id, task, status, detail, created_at) VALUES (?,?,?,?,?)')
+            ->execute([$id, 'wifi', 'sent', 'Customer changed ' . ($ssid !== '' ? 'name' : '') . ($ssid !== '' && $pass !== '' ? ' and ' : '') . ($pass !== '' ? 'password' : '') . ' from the app', date('Y-m-d H:i:s')]);
+    } catch (Throwable $e) {
+    }
+    mobile_api_out(['ok' => true, 'message' => 'Sent to your router. Devices on Wi-Fi will disconnect for a moment and need the new ' . ($pass !== '' ? 'password' : 'name') . '.']);
+}
+
+/* ------------------------------------------------------------------ */
+/* client: M-Pesa STK push to the paybill (the website's C2B flow credits it) */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_phone254($p)
+{
+    $d = preg_replace('/\D+/', '', (string) $p);
+    if (strpos($d, '254') === 0 && strlen($d) === 12) return $d;
+    if (strpos($d, '0') === 0 && strlen($d) === 10) return '254' . substr($d, 1);
+    if (strlen($d) === 9 && ($d[0] === '7' || $d[0] === '1')) return '254' . $d;
+    return null;
+}
+
+function mobile_api_mpesa_base()
+{
+    global $config;
+    if (!empty($config['mobile_mpesa_base'])) return rtrim($config['mobile_mpesa_base'], '/');
+    return (isset($config['mpesa_env']) && $config['mpesa_env'] === 'live') ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
+}
+
+function mobile_api_mpesa_call($path, $body, $token = null, $basic = null)
+{
+    $ch = curl_init(mobile_api_mpesa_base() . $path);
+    $h = ['Content-Type: application/json'];
+    if ($token) $h[] = 'Authorization: Bearer ' . $token;
+    $opt = [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 25, CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_HTTPHEADER => $h];
+    if ($basic) $opt[CURLOPT_USERPWD] = $basic;
+    if ($body !== null) {
+        $opt[CURLOPT_POST] = true;
+        $opt[CURLOPT_POSTFIELDS] = json_encode($body);
+    }
+    curl_setopt_array($ch, $opt);
+    $res = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $j = is_string($res) ? json_decode($res, true) : null;
+    return [$code, is_array($j) ? $j : []];
+}
+
+function mobile_api_mpesa_token()
+{
+    global $config;
+    if (empty($config['mpesa_consumer_key']) || empty($config['mpesa_consumer_secret']) || empty($config['mpesa_business_code']) || empty($config['mpesa_pass_key'])) {
+        mobile_api_fail('Paying with M-Pesa from the app is not set up yet. Please pay to the paybill.', 503);
+    }
+    list($code, $j) = mobile_api_mpesa_call('/oauth/v1/generate?grant_type=client_credentials', null, null, $config['mpesa_consumer_key'] . ':' . $config['mpesa_consumer_secret']);
+    if ($code !== 200 || empty($j['access_token'])) mobile_api_fail('M-Pesa is not reachable right now. Please try again.', 502);
+    return $j['access_token'];
+}
+
+function mobile_api_client_stk($s)
+{
+    global $config;
+    $c = mobile_api_client_row($s);
+    $amount = (int) mobile_api_in('amount');
+    if ($amount < 1 || $amount > 150000) mobile_api_fail('Enter an amount between 1 and 150,000', 422);
+    $phone = mobile_api_phone254(mobile_api_in('phone') !== '' ? mobile_api_in('phone') : $c['phonenumber']);
+    if (!$phone) mobile_api_fail('Enter a Safaricom number like 0712345678', 422);
+    $recent = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_stk WHERE customer_id = ? AND created_at > ?", [(int) $c['id'], date('Y-m-d H:i:s', time() - 60)]);
+    if ((int) $recent[0]['n'] > 0) mobile_api_fail('A payment request was just sent. Check your phone, or wait a minute.', 429);
+    $day = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_stk WHERE customer_id = ? AND created_at > ?", [(int) $c['id'], date('Y-m-d H:i:s', time() - 86400)]);
+    if ((int) $day[0]['n'] >= 10) mobile_api_fail('Daily limit reached. Please pay to the paybill instead.', 429);
+
+    $tok = mobile_api_mpesa_token();
+    $ts = date('YmdHis');
+    $short = (string) $config['mpesa_business_code'];
+    $till = isset($config['mpesa_shortcode_type']) && stripos($config['mpesa_shortcode_type'], 'till') !== false;
+    $base = defined('APP_URL') ? APP_URL : ((isset($_SERVER['HTTP_HOST']) ? 'https://' . $_SERVER['HTTP_HOST'] : 'https://example.invalid'));
+    list($code, $j) = mobile_api_mpesa_call('/mpesa/stkpush/v1/processrequest', [
+        'BusinessShortCode' => $short,
+        'Password' => base64_encode($short . $config['mpesa_pass_key'] . $ts),
+        'Timestamp' => $ts,
+        'TransactionType' => $till ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline',
+        'Amount' => $amount,
+        'PartyA' => $phone,
+        'PartyB' => $short,
+        'PhoneNumber' => $phone,
+        'CallBackURL' => rtrim($base, '/') . '/?_route=plugin/mobile_api&a=mpesa_cb',
+        'AccountReference' => mb_substr($c['username'], 0, 12),
+        'TransactionDesc' => 'Internet',
+    ], $tok);
+    if ($code !== 200 || (isset($j['ResponseCode']) && (string) $j['ResponseCode'] !== '0') || empty($j['CheckoutRequestID'])) {
+        mobile_api_fail('M-Pesa did not accept the request' . (!empty($j['errorMessage']) ? ': ' . $j['errorMessage'] : '') . '. Please try again.', 502);
+    }
+    $now = date('Y-m-d H:i:s');
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_stk (customer_id, phone, amount, checkout_id, status, created_at) VALUES (?,?,?,?,?,?)')
+        ->execute([(int) $c['id'], $phone, $amount, $j['CheckoutRequestID'], 'pending', $now]);
+    mobile_api_out(['ok' => true, 'id' => (int) ORM::get_db()->lastInsertId(), 'message' => 'Check your phone and enter your M-Pesa PIN.']);
+}
+
+function mobile_api_client_stk_status($s)
+{
+    $rows = mobile_api_rows('SELECT * FROM tbl_mobile_stk WHERE id = ? AND customer_id = ?', [(int) mobile_api_in('id'), (int) $s['user_id']]);
+    if (!$rows) mobile_api_fail('Payment not found', 404);
+    $r = $rows[0];
+    if ($r['status'] === 'pending' && strtotime($r['created_at']) > time() - 600) {
+        // ask M-Pesa directly: the result does not depend on the callback arriving
+        global $config;
+        try {
+            $tok = mobile_api_mpesa_token();
+            $ts = date('YmdHis');
+            $short = (string) $config['mpesa_business_code'];
+            list($code, $j) = mobile_api_mpesa_call('/mpesa/stkpushquery/v1/query', [
+                'BusinessShortCode' => $short, 'Password' => base64_encode($short . $config['mpesa_pass_key'] . $ts), 'Timestamp' => $ts, 'CheckoutRequestID' => $r['checkout_id'],
+            ], $tok);
+            if (isset($j['ResultCode'])) {
+                $rc = (string) $j['ResultCode'];
+                $status = $rc === '0' ? 'success' : ($rc === '1032' ? 'cancelled' : 'failed');
+                ORM::get_db()->prepare('UPDATE tbl_mobile_stk SET status = ?, result_desc = ?, updated_at = ? WHERE id = ? AND status = "pending"')
+                    ->execute([$status, mb_substr((string) (isset($j['ResultDesc']) ? $j['ResultDesc'] : ''), 0, 200), date('Y-m-d H:i:s'), (int) $r['id']]);
+                $r['status'] = $status;
+                $r['result_desc'] = isset($j['ResultDesc']) ? $j['ResultDesc'] : '';
+            }
+        } catch (Throwable $e) {
+        }
+    } elseif ($r['status'] === 'pending') {
+        ORM::get_db()->prepare('UPDATE tbl_mobile_stk SET status = "failed", result_desc = "Timed out", updated_at = ? WHERE id = ?')->execute([date('Y-m-d H:i:s'), (int) $r['id']]);
+        $r['status'] = 'failed';
+        $r['result_desc'] = 'Timed out';
+    }
+    $msg = ['pending' => 'Waiting for you to enter your PIN...', 'success' => 'Payment received. Your account updates automatically in a moment.',
+        'cancelled' => 'You cancelled the payment.', 'failed' => 'The payment did not go through. ' . (string) $r['result_desc']][$r['status']];
+    mobile_api_out(['ok' => true, 'status' => $r['status'], 'message' => $msg]);
+}
+
+/** Safaricom calls this when the customer answers the prompt. It only records the result; the account is credited by the website's C2B flow. */
+function mobile_api_mpesa_cb()
+{
+    header('Content-Type: application/json');
+    $raw = file_get_contents('php://input');
+    $j = json_decode($raw, true);
+    $cb = is_array($j) && isset($j['Body']['stkCallback']) ? $j['Body']['stkCallback'] : null;
+    if ($cb && !empty($cb['CheckoutRequestID'])) {
+        try {
+            $rc = (string) (isset($cb['ResultCode']) ? $cb['ResultCode'] : '');
+            $status = $rc === '0' ? 'success' : ($rc === '1032' ? 'cancelled' : 'failed');
+            ORM::get_db()->prepare('UPDATE tbl_mobile_stk SET status = ?, result_desc = ?, updated_at = ? WHERE checkout_id = ? AND status = "pending"')
+                ->execute([$status, mb_substr((string) (isset($cb['ResultDesc']) ? $cb['ResultDesc'] : ''), 0, 200), date('Y-m-d H:i:s'), (string) $cb['CheckoutRequestID']]);
+        } catch (Throwable $e) {
+        }
+    }
+    echo json_encode(['ResultCode' => 0, 'ResultDesc' => 'Accepted']);
+    exit;
 }

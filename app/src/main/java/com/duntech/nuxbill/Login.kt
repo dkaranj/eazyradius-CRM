@@ -53,7 +53,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
             try {
                 Api.base = base
                 Api.token = ""
-                val r = Api.call("login", mapOf("username" to user.trim(), "password" to pass))
+                val r = Api.call("login", mapOf("username" to user.trim(), "password" to pass, "device" to deviceName()))
                 onLoggedIn(
                     Auth(base, r.getString("token"), r.getString("role"), r.optString("name"), r.optString("user_type"))
                         .withAccess(r.optJSONObject("access"))

@@ -100,3 +100,22 @@ The server plugin needs `system/uploads` to be writable by the web server for ph
 ## Reports
 
 **Reports** tab (module "Reports: revenue, expiring, team"): pick Today, 7 days, This month or Last month to see revenue (with a per-day chart, payment methods and top plans), installation fees collected, new / active / lapsed customers, who expires in the next 7 days (with Call / WhatsApp / SMS and a ready renewal message), and team performance (installations done, tickets resolved, average time, items past SLA). **Export** buttons produce CSV files (revenue, expiring, installations, tickets) and open the phone's share sheet, so they go straight to Google Sheets, Excel, WhatsApp or email.
+
+## Customer extras, ticket comments and security
+
+**Customers (client side)**
+- *Top up (M-Pesa)* on Home: sends an STK push to the paybill (account reference = username). The website's existing C2B confirmation credits the account; the app only shows the result. Needs `mpesa_consumer_key/secret/business_code/pass_key` in the PHPNuxBill settings.
+- *Support* tab: raise a ticket, follow the conversation, reply. Tickets land in the normal Support list for staff.
+- *Outage notices* appear as a banner on Home and arrive as a notification.
+- *My Wi-Fi*: change Wi-Fi name and/or password through GenieACS (the customer must be linked to an ONU/router; one change per 5 minutes).
+
+**Staff**
+- *Notices* module (tick it on the Access screen): publish outage, warning or info notices, optionally auto-expiring.
+- *Comments* button on tickets: conversation with the customer plus internal notes customers never see. Works offline (queued).
+
+**Security**
+- Settings (header): app lock with fingerprint, face or phone PIN, auto-lock delay, optional screenshot blocking.
+- Settings also lists signed-in devices with remote sign-out. Admins can log a user out of every phone from Users (lost phone).
+- Login is throttled after repeated wrong passwords (8 per username or 30 per IP in 15 minutes).
+
+Re-upload `server/system/plugin/mobile_api.php`; new tables are created automatically.

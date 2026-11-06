@@ -3,7 +3,7 @@ package com.duntech.nuxbill
 import android.content.res.Configuration
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,20 +50,42 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
         ThemeState.init(this)
+        AppLock.init(this)
+        AppLock.applySecure(this)
         Notifier.ensureChannel(this)
         Notifier.schedule(this)
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         window.setBackgroundDrawable(ColorDrawable(resolveTheme(ThemeState.config, night).background.toArgb()))
         setContent {
             NuxTheme {
-                Surface(Modifier.fillMaxSize()) { App() }
+                Surface(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize()) {
+                        App()
+                        if (AppLock.locked && Api.token.isNotEmpty()) {
+                            LockScreen(onLogout = {
+                                AppLock.locked = false
+                                kotlinx.coroutines.MainScope().launch { try { Api.call("logout") } catch (e: Exception) { }; Api.onUnauthorized?.invoke() }
+                            })
+                        }
+                    }
+                }
             }
         }
+    }
+
+    override fun onStop() {
+        AppLock.onStop()
+        super.onStop()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppLock.onStart()
     }
 }
 
@@ -162,6 +185,7 @@ private fun staffTabs(a: Auth): List<NavTab> {
     if ("customers" in m) out.add(NavTab("customers", "Customers"))
     if ("payments" in m) out.add(NavTab("payments", "Payments"))
     if ("reports" in m) out.add(NavTab("reports", "Reports"))
+    if ("notices" in m) out.add(NavTab("notices", "Notices"))
     if ("onu" in m) out.add(NavTab("onu", "ONUs"))
     if ("usage" in m) out.add(NavTab("usage", "Usage"))
     if ("my_hr" in m) out.add(NavTab("my_hr", "My HR"))
@@ -181,7 +205,7 @@ private fun staffTabs(a: Auth): List<NavTab> {
 fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
     val isClient = auth.role == "client"
     val tabs = if (isClient) {
-        listOf(NavTab("c_home", "Home"), NavTab("c_plans", "Plans"), NavTab("c_usage", "Usage"), NavTab("c_history", "History"))
+        listOf(NavTab("c_home", "Home"), NavTab("c_plans", "Plans"), NavTab("c_support", "Support"), NavTab("c_usage", "Usage"), NavTab("c_history", "History"))
     } else {
         staffTabs(auth)
     }
@@ -191,6 +215,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
     val idx = tab.coerceIn(0, tabs.lastIndex)
     val r = LocalResolvedTheme.current
     var showTheme by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     val roleLabel = when {
         isClient -> "Client"
@@ -211,7 +236,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                         actionIconContentColor = r.headerText
                     ),
                     actions = {
-                        HeaderButton("Theme") { showTheme = true }
+                        HeaderButton("Settings") { showSettings = true }
                         HeaderButton("Refresh") {
                             scope.launch {
                                 if (!isClient) {
@@ -257,7 +282,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
         },
         bottomBar = {
             if (isClient) {
-                val icons = listOf(Icons.Default.Home, Icons.Default.ShoppingCart, Icons.Default.Info, Icons.Default.List)
+                val icons = listOf(Icons.Default.Home, Icons.Default.ShoppingCart, Icons.Default.Phone, Icons.Default.Info, Icons.Default.List)
                 NavigationBar(containerColor = r.footer, contentColor = r.footerText) {
                     tabs.forEachIndexed { i, t ->
                         NavigationBarItem(
@@ -292,6 +317,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
             when (tabs[idx].key) {
                 "c_home" -> ClientHome(reload)
                 "c_plans" -> ClientPlans(reload)
+                "c_support" -> ClientSupport(reload)
                 "c_usage" -> ClientUsage(reload)
                 "c_history" -> ClientHistory(reload)
                 "home" -> TechHome(reload)
@@ -307,6 +333,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                 "onu" -> OnuScreen(reload)
                 "usage" -> UsageScreen(reload)
                 "audit" -> AuditScreen(reload)
+                "notices" -> NoticesScreen(reload)
                 "my_hr" -> MyHr(reload)
                 "hr_employees" -> HrEmployees(reload)
                 "hr_attendance" -> HrAttendance(reload)
@@ -318,6 +345,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
           }
         }
     }
+    if (showSettings) SettingsDialog(onTheme = { showTheme = true }, onClose = { showSettings = false })
     if (showTheme) ThemeDialog { showTheme = false }
 
 }

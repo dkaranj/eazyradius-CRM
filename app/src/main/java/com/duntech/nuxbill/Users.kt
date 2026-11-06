@@ -219,6 +219,18 @@ private fun UserDialog(
                 if (!isNew && !self) {
                     OutlinedButton(
                         onClick = {
+                            scope.launch {
+                                try {
+                                    toast(ctx, Api.call("admin_user_logout", mapOf("id" to user!!.optInt("id").toString())).optString("message"))
+                                } catch (e: Exception) {
+                                    toast(ctx, e.message)
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Log out of all devices (lost phone)") }
+                    OutlinedButton(
+                        onClick = {
                             if (!confirmDelete) {
                                 confirmDelete = true
                             } else {
