@@ -163,6 +163,14 @@ function mobile_api()
                 mobile_api_checkin($s);
 
             // ---- staff: audit log ----
+            case 'report':
+                mobile_api_mod($s, 'reports');
+                mobile_api_report();
+
+            case 'report_export':
+                mobile_api_mod($s, 'reports');
+                mobile_api_report_export();
+
             // ---- installation payments ----
             case 'inst_pay_list':
                 mobile_api_mod($s, 'install_pay');
@@ -1766,6 +1774,7 @@ function mobile_api_catalog()
         ['key' => 'dashboard', 'label' => 'Business dashboard', 'group' => 'General'],
         ['key' => 'customers', 'label' => 'Customers and recharge', 'group' => 'General'],
         ['key' => 'payments', 'label' => 'Payments', 'group' => 'General'],
+        ['key' => 'reports', 'label' => 'Reports: revenue, expiring, team', 'group' => 'General'],
         ['key' => 'leads', 'label' => 'Leads', 'group' => 'Operations'],
         ['key' => 'installations', 'label' => 'Installations', 'group' => 'Operations'],
         ['key' => 'support', 'label' => 'Support tickets', 'group' => 'Operations'],
@@ -3892,4 +3901,179 @@ function mobile_api_pay_scan($s)
         }
     } catch (Throwable $e) {
     }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* reports                                                             */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_report_range()
+{
+    $p = (string) mobile_api_in('period');
+    $today = date('Y-m-d');
+    switch ($p) {
+        case 'today':
+            return [$today, $today, 'Today'];
+        case 'month':
+            return [date('Y-m-01'), $today, 'This month'];
+        case 'last_month':
+            return [date('Y-m-01', strtotime('first day of last month')), date('Y-m-t', strtotime('first day of last month')), 'Last month'];
+        case 'custom':
+            $f = (string) mobile_api_in('from');
+            $t = (string) mobile_api_in('to');
+            if (mobile_api_hr_valid_date($f) && mobile_api_hr_valid_date($t) && $f <= $t) return [$f, $t, $f . ' to ' . $t];
+            mobile_api_fail('Pick a valid date range', 422);
+        default:
+            return [date('Y-m-d', strtotime('-6 days')), $today, 'Last 7 days'];
+    }
+}
+
+function mobile_api_report()
+{
+    list($from, $to, $label) = mobile_api_report_range();
+    $f = $from . ' 00:00:00';
+    $t = $to . ' 23:59:59';
+    $amt = 'CAST(price AS DECIMAL(14,2))';
+
+    // revenue
+    $tot = mobile_api_rows("SELECT COUNT(*) n, COALESCE(SUM($amt),0) s FROM tbl_transactions WHERE recharged_on BETWEEN ? AND ?", [$from, $to]);
+    $byDay = [];
+    foreach (mobile_api_rows("SELECT recharged_on d, COUNT(*) n, SUM($amt) s FROM tbl_transactions WHERE recharged_on BETWEEN ? AND ? GROUP BY recharged_on ORDER BY recharged_on", [$from, $to]) as $r) {
+        $byDay[$r['d']] = ['day' => $r['d'], 'count' => (int) $r['n'], 'total' => (float) $r['s']];
+    }
+    // every day in the range appears, so the chart has no gaps
+    $days = [];
+    for ($d = strtotime($from); $d <= strtotime($to) && count($days) < 62; $d += 86400) {
+        $k = date('Y-m-d', $d);
+        $days[] = isset($byDay[$k]) ? $byDay[$k] : ['day' => $k, 'count' => 0, 'total' => 0.0];
+    }
+    $methods = [];
+    foreach (mobile_api_rows("SELECT method, COUNT(*) n, SUM($amt) s FROM tbl_transactions WHERE recharged_on BETWEEN ? AND ? GROUP BY method", [$from, $to]) as $r) {
+        $name = trim(explode(' - ', (string) $r['method'])[0]);
+        $name = $name === '' ? 'Other' : $name;
+        if (!isset($methods[$name])) $methods[$name] = ['method' => $name, 'count' => 0, 'total' => 0.0];
+        $methods[$name]['count'] += (int) $r['n'];
+        $methods[$name]['total'] += (float) $r['s'];
+    }
+    usort($methods, function ($a, $b) { return $b['total'] <=> $a['total']; });
+    $plans = [];
+    foreach (mobile_api_rows("SELECT plan_name, COUNT(*) n, SUM($amt) s FROM tbl_transactions WHERE recharged_on BETWEEN ? AND ? GROUP BY plan_name ORDER BY s DESC LIMIT 10", [$from, $to]) as $r) {
+        $plans[] = ['plan' => $r['plan_name'], 'count' => (int) $r['n'], 'total' => (float) $r['s']];
+    }
+    $inst = mobile_api_rows('SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM tbl_installation_payments WHERE created_at BETWEEN ? AND ? AND method <> "waived"', [$f, $t]);
+
+    // customers
+    $on = mobile_api_rows("SELECT COUNT(DISTINCT customer_id) n FROM tbl_user_recharges WHERE status = 'on'");
+    $off = mobile_api_rows("SELECT COUNT(DISTINCT customer_id) n FROM tbl_user_recharges WHERE status <> 'on' AND customer_id NOT IN (SELECT customer_id FROM tbl_user_recharges WHERE status = 'on')");
+    $new = mobile_api_rows('SELECT COUNT(*) n FROM tbl_customers WHERE created_at BETWEEN ? AND ?', [$f, $t]);
+    $lapsed = mobile_api_rows("SELECT COUNT(DISTINCT customer_id) n FROM tbl_user_recharges WHERE status <> 'on' AND expiration BETWEEN ? AND ? AND customer_id NOT IN (SELECT customer_id FROM tbl_user_recharges WHERE status = 'on')", [$from, $to]);
+    $expiring = [];
+    foreach (mobile_api_rows("SELECT r.username, r.namebp, r.expiration, r.time, c.fullname, c.phonenumber FROM tbl_user_recharges r LEFT JOIN tbl_customers c ON c.id = r.customer_id
+            WHERE r.status = 'on' AND r.expiration BETWEEN ? AND ? ORDER BY r.expiration, r.time LIMIT 100", [date('Y-m-d'), date('Y-m-d', strtotime('+7 days'))]) as $r) {
+        $expiring[] = ['username' => $r['username'], 'name' => $r['fullname'] ?: $r['username'], 'phone' => $r['phonenumber'], 'plan' => $r['namebp'], 'expires' => trim($r['expiration'] . ' ' . $r['time'])];
+    }
+
+    // team
+    $team = [];
+    $touch = function ($id) use (&$team) {
+        $id = (int) $id;
+        if ($id > 0 && !isset($team[$id])) {
+            $team[$id] = ['id' => $id, 'tickets_new' => 0, 'tickets_done' => 0, 'ticket_hours' => null, 'installs_done' => 0, 'install_hours' => null, 'overdue_now' => 0];
+        }
+        return $id;
+    };
+    try {
+        foreach (mobile_api_rows('SELECT assigned_to a, COUNT(*) n FROM tbl_support_tickets WHERE assigned_to > 0 AND created_at BETWEEN ? AND ? GROUP BY assigned_to', [$f, $t]) as $r) {
+            $team[$touch($r['a'])]['tickets_new'] = (int) $r['n'];
+        }
+        foreach (mobile_api_rows('SELECT assigned_to a, COUNT(*) n, AVG(TIMESTAMPDIFF(MINUTE, created_at, resolved_at))/60 h FROM tbl_support_tickets WHERE assigned_to > 0 AND resolved_at BETWEEN ? AND ? GROUP BY assigned_to', [$f, $t]) as $r) {
+            $id = $touch($r['a']);
+            $team[$id]['tickets_done'] = (int) $r['n'];
+            $team[$id]['ticket_hours'] = $r['h'] === null ? null : round((float) $r['h'], 1);
+        }
+        foreach (mobile_api_rows("SELECT technician_id a, COUNT(*) n, AVG(TIMESTAMPDIFF(MINUTE, created_at, completed_at))/60 h FROM tbl_installations WHERE technician_id > 0 AND status IN ('completed','complete') AND completed_at BETWEEN ? AND ? GROUP BY technician_id", [$f, $t]) as $r) {
+            $id = $touch($r['a']);
+            $team[$id]['installs_done'] = (int) $r['n'];
+            $team[$id]['install_hours'] = $r['h'] === null ? null : round((float) $r['h'], 1);
+        }
+        foreach (['ticket', 'install'] as $e) {
+            $meta = mobile_api_ops_meta($e);
+            if (!$meta || !$meta['map']['assignee'] || !$meta['assignee_int']) continue;
+            foreach (ORM::for_table($meta['table'])->order_by_desc('id')->limit(500)->find_many() as $row) {
+                $sla = mobile_api_sla($meta, $row->as_array());
+                if ($sla && $sla['overdue']) {
+                    $aid = (int) $row[$meta['map']['assignee']];
+                    if ($aid > 0) $team[$touch($aid)]['overdue_now']++;
+                }
+            }
+        }
+    } catch (Throwable $e) {
+    }
+    $names = mobile_api_user_names();
+    $teamOut = [];
+    foreach ($team as $id => $t2) {
+        $t2['name'] = isset($names[$id]) ? $names[$id] : '#' . $id;
+        $teamOut[] = $t2;
+    }
+    usort($teamOut, function ($a, $b) { return ($b['tickets_done'] + $b['installs_done']) <=> ($a['tickets_done'] + $a['installs_done']); });
+
+    mobile_api_out(['ok' => true, 'range' => ['from' => $from, 'to' => $to, 'label' => $label],
+        'revenue' => ['total' => (float) $tot[0]['s'], 'count' => (int) $tot[0]['n'], 'days' => $days, 'methods' => array_values($methods), 'plans' => $plans,
+            'install_collected' => (float) $inst[0]['s'], 'install_payments' => (int) $inst[0]['n']],
+        'customers' => ['active' => (int) $on[0]['n'], 'expired' => (int) $off[0]['n'], 'new' => (int) $new[0]['n'], 'lapsed' => (int) $lapsed[0]['n'], 'expiring' => $expiring],
+        'team' => $teamOut]);
+}
+
+
+function mobile_api_csv($rows)
+{
+    $fh = fopen('php://temp', 'r+');
+    foreach ($rows as $r) {
+        fputcsv($fh, array_map(function ($v) {
+            $v = (string) $v;
+            // a cell that starts with = + - @ would run as a formula in Excel: make it text
+            return ($v !== '' && strpos('=+-@', $v[0]) !== false && !is_numeric($v)) ? "'" . $v : $v;
+        }, $r));
+    }
+    rewind($fh);
+    $out = stream_get_contents($fh);
+    fclose($fh);
+    return "\xEF\xBB\xBF" . $out;
+}
+
+function mobile_api_report_export()
+{
+    list($from, $to) = mobile_api_report_range();
+    $kind = (string) mobile_api_in('kind');
+    $f0 = $from . ' 00:00:00';
+    $t1 = $to . ' 23:59:59';
+    $rows = [];
+    if ($kind === 'revenue') {
+        $rows[] = ['Invoice', 'Date', 'Time', 'Username', 'Plan', 'Amount', 'Method', 'Type'];
+        foreach (mobile_api_rows('SELECT invoice, recharged_on, recharged_time, username, plan_name, price, method, type FROM tbl_transactions WHERE recharged_on BETWEEN ? AND ? ORDER BY id', [$from, $to]) as $t) {
+            $rows[] = [$t['invoice'], $t['recharged_on'], $t['recharged_time'], $t['username'], $t['plan_name'], $t['price'], $t['method'], $t['type']];
+        }
+    } elseif ($kind === 'expiring') {
+        $rows[] = ['Username', 'Name', 'Phone', 'Plan', 'Expires'];
+        foreach (mobile_api_rows("SELECT r.username, r.namebp, r.expiration, c.fullname, c.phonenumber FROM tbl_user_recharges r LEFT JOIN tbl_customers c ON c.id = r.customer_id
+                WHERE r.status = 'on' AND r.expiration BETWEEN ? AND ? ORDER BY r.expiration", [date('Y-m-d'), date('Y-m-d', strtotime('+14 days'))]) as $r) {
+            $rows[] = [$r['username'], $r['fullname'], $r['phonenumber'], $r['namebp'], $r['expiration']];
+        }
+    } elseif ($kind === 'installs') {
+        $rows[] = ['Job', 'Customer', 'Phone', 'Plan', 'Status', 'Payment', 'Due', 'Paid', 'Created', 'Completed'];
+        foreach (mobile_api_rows('SELECT job_no, customer_name, phone, plan_name, status, pay_status, amount_due, amount_paid, created_at, completed_at FROM tbl_installations WHERE created_at BETWEEN ? AND ? ORDER BY id', [$f0, $t1]) as $i) {
+            $rows[] = [$i['job_no'], $i['customer_name'], $i['phone'], $i['plan_name'], $i['status'], $i['pay_status'], $i['amount_due'], $i['amount_paid'], $i['created_at'], $i['completed_at']];
+        }
+    } elseif ($kind === 'tickets') {
+        $names = mobile_api_user_names();
+        $rows[] = ['No', 'Title', 'Status', 'Priority', 'Assigned to', 'Created', 'Resolved'];
+        foreach (mobile_api_rows('SELECT id, title, status, priority, assigned_to, created_at, resolved_at FROM tbl_support_tickets WHERE created_at BETWEEN ? AND ? ORDER BY id', [$f0, $t1]) as $t) {
+            $a = (int) $t['assigned_to'];
+            $rows[] = [$t['id'], $t['title'], $t['status'], $t['priority'], isset($names[$a]) ? $names[$a] : '', $t['created_at'], $t['resolved_at']];
+        }
+    } else {
+        mobile_api_fail('Choose what to export', 422);
+    }
+    mobile_api_out(['ok' => true, 'filename' => 'eazyradius-' . $kind . '-' . $from . '_' . $to . '.csv', 'rows' => count($rows) - 1, 'csv' => mobile_api_csv($rows)]);
 }

@@ -96,3 +96,7 @@ The server plugin needs `system/uploads` to be writable by the web server for ph
 ## Installation payments
 
 **Install pay** tab (module "Installation payments"): every installation with what is due, paid and owed, the account number the customer pays to (the job number), and its payment history. People with "Can assign work" can claim an M-Pesa payment by transaction code (the amount is taken from the payment your paybill received, and a code can only be used once; payments sent to the job number are suggested automatically), record cash, or skip payment with a required reason. Everything is written to the same tables as the website plugin and to the audit log, and the technician is alerted when the job is paid. Completing the installation and activating the package stay in the website Installations plugin, so the payment gate and router step are never bypassed.
+
+## Reports
+
+**Reports** tab (module "Reports: revenue, expiring, team"): pick Today, 7 days, This month or Last month to see revenue (with a per-day chart, payment methods and top plans), installation fees collected, new / active / lapsed customers, who expires in the next 7 days (with Call / WhatsApp / SMS and a ready renewal message), and team performance (installations done, tickets resolved, average time, items past SLA). **Export** buttons produce CSV files (revenue, expiring, installations, tickets) and open the phone's share sheet, so they go straight to Google Sheets, Excel, WhatsApp or email.
