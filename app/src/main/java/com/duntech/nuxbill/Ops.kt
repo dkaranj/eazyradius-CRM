@@ -232,6 +232,8 @@ private fun OpsCard(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var assigning by remember { mutableStateOf(false) }
+    var showClient by remember { mutableStateOf(false) }
+    var showVisit by remember { mutableStateOf(false) }
     val id = item.optInt("id").toString()
     val phone = item.optString("phone")
     val address = item.optString("address")
@@ -263,12 +265,13 @@ private fun OpsCard(
             KeyValue("Created", item.optString("created"))
             KeyValue("Assigned to", if (who.isBlank()) "Unassigned" else who)
             Spacer(Modifier.height(8.dp))
+            ContactRow(phone, "Hello, this is Eazyradius support about: " + item.optString("title"))
+            Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (phone.isNotBlank()) {
-                    OutlinedButton(onClick = {
-                        ctx.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + phone)))
-                    }) { Text("Call") }
+                if (entity != "lead" || phone.isNotBlank()) {
+                    OutlinedButton(onClick = { showClient = true }) { Text("Client") }
                 }
+                OutlinedButton(onClick = { showVisit = true }) { Text("Visit") }
                 if (address.isNotBlank()) {
                     OutlinedButton(onClick = {
                         val i = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(address)))
@@ -290,6 +293,12 @@ private fun OpsCard(
             }
         }
     }
+
+    if (showClient) {
+        val u = item.optString("customer_username")
+        Customer360Dialog(if (u.isNotBlank()) mapOf("username" to u) else mapOf("phone" to phone), onClose = { showClient = false })
+    }
+    if (showVisit) VisitDialog(entity, item.optInt("id"), item.optString("title")) { showVisit = false }
 
     if (assigning) {
         AlertDialog(

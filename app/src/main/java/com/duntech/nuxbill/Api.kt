@@ -76,7 +76,7 @@ object Api {
                 Offline.markOffline()
                 c
             } else {
-                throw ApiException("No connection and nothing saved for this screen yet", 0)
+                throw ApiException(if (action in Offline.neverCache) "No connection. This needs internet." else "No connection and nothing saved for this screen yet", 0)
             }
         }
     }

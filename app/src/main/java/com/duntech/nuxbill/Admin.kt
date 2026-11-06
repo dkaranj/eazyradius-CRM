@@ -58,6 +58,7 @@ fun AdminCustomers(reload: Int) {
     var q by rememberSaveable { mutableStateOf("") }
     var applied by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf<Int?>(null) }
+    var recharging by remember { mutableStateOf<Int?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -88,7 +89,10 @@ fun AdminCustomers(reload: Int) {
             }
         }
     }
-    selected?.let { id -> CustomerDialog(id) { selected = null } }
+    selected?.let { id ->
+        Customer360Dialog(mapOf("id" to id.toString()), onClose = { selected = null }, onRecharge = { cid -> selected = null; recharging = cid })
+    }
+    recharging?.let { id -> CustomerDialog(id) { recharging = null } }
 }
 
 @Composable

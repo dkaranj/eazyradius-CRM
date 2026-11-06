@@ -79,3 +79,11 @@ Anything left on Auto is worked out from the other choices (for example text and
 - **Offline mode**: every screen keeps its last data and shows it with a banner when there is no connection. New tickets and leads, status changes, clock in/out and leave requests are saved on the phone and sent automatically when it is back online (each is applied once, even if the connection drops mid-send). Clocking offline records the time you actually pressed the button. Anything the server refuses later is listed under Review.
 
 Re-upload `server/system/plugin/mobile_api.php` after updating; the two new tables are created automatically.
+
+## Alerts, Customer 360 and site visits
+
+- **Notifications**: the phone checks for news every 30 seconds while the app is open and about every 15 minutes in the background (no Google services or Firebase needed). You are alerted when work is assigned to you, when a new ticket or lead needs assigning (people who can assign), when leave is requested or decided, and for ONU alerts and FUP throttling (roles with those sections). Allow notifications when asked. Some phones need "battery: unrestricted" for the background checks.
+- **Customer 360**: tap a customer (Customers tab), or the **Client** button on a ticket/lead. One screen with Call / WhatsApp / SMS, plan and expiry, wallet, linked ONU health, usage and FUP, tickets and payments. Local numbers (07...) are converted to +254 for WhatsApp.
+- **Visit button** on every ticket, lead and installation: **I've arrived** and **Job finished** stamp your GPS position and time (and show how far you are from the customer's saved location), and **Take a photo** attaches a geotagged picture. Check-ins work offline and are sent later with their real time; photos need a connection. Photos are stored in `system/uploads/mobile/` on the server (closed to direct web access).
+
+The server plugin needs `system/uploads` to be writable by the web server for photos.

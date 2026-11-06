@@ -54,6 +54,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(this)
         ThemeState.init(this)
+        Notifier.ensureChannel(this)
+        Notifier.schedule(this)
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         window.setBackgroundDrawable(ColorDrawable(resolveTheme(ThemeState.config, night).background.toArgb()))
         setContent {
@@ -107,9 +109,19 @@ fun App() {
             } catch (e: Exception) {
             }
         }
+        val appCtx = androidx.compose.ui.platform.LocalContext.current
+        val notifPerm = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+        ) { }
+        LaunchedEffect(a.token) {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && !Notifier.canShow(appCtx)) {
+                notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         LaunchedEffect(a.token) {
             while (true) {
                 try { Offline.flush() } catch (e: Exception) { }
+                try { Notifier.poll(appCtx) } catch (e: Exception) { }
                 kotlinx.coroutines.delay(30000)
             }
         }

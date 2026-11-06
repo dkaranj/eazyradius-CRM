@@ -22,11 +22,11 @@ object Offline {
     private lateinit var prefs: SharedPreferences
 
     /** Writes that may wait in the queue. Must match mobile_api_queueable() on the server. */
-    val queueable = setOf("ops_create", "ops_update", "hr_clock", "hr_leave_request")
+    val queueable = setOf("ops_create", "ops_update", "hr_clock", "hr_leave_request", "checkin")
 
     /** Answers that must always be live (or fail). */
     val neverCache = setOf("login", "logout", "ping", "onu_reboot", "admin_recharge", "client_buy", "admin_user_save", "admin_user_delete",
-        "access_save", "access_reset", "hr_employee_save", "hr_leave_decide") + queueable
+        "access_save", "access_reset", "hr_employee_save", "hr_leave_decide", "photo_add", "photo_get", "notify_poll") + queueable
 
     var pending by mutableIntStateOf(0)
         private set
@@ -161,5 +161,6 @@ fun actionLabel(a: String): String = when (a) {
     "ops_update" -> "Status or assignment change"
     "hr_clock" -> "Clock in / out"
     "hr_leave_request" -> "Leave request"
+    "checkin" -> "Site check-in"
     else -> a
 }
