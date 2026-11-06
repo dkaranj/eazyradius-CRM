@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.CardDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -164,6 +167,14 @@ fun OpsList(entity: String, reload: Int) {
         }
 
         Column(Modifier.fillMaxSize()) {
+            val overdueN = j.optInt("overdue")
+            if (overdueN > 0) {
+                Text(
+                    "$overdueN past SLA",
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = Color(0xFFDC2626), fontWeight = FontWeight.Bold
+                )
+            }
             val note = j.optString("note")
             if (note.isNotBlank()) {
                 Text(note, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.error)
@@ -251,8 +262,24 @@ private fun OpsCard(
         }
     }
 
-    Card(Modifier.fillMaxWidth()) {
+    val sla = item.optJSONObject("sla")
+    val late = sla?.optBoolean("overdue") == true
+    val soon = !late && sla != null && sla.optInt("left_min") < 360
+    val slaRed = Color(0xFFDC2626)
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = if (late) CardDefaults.cardColors(containerColor = slaRed.copy(alpha = 0.16f)) else CardDefaults.cardColors(),
+        border = if (late) BorderStroke(2.dp, slaRed) else null
+    ) {
         Column(Modifier.padding(14.dp)) {
+            if (sla != null) {
+                Text(
+                    (if (late) "PAST SLA · " else "SLA · ") + sla.optString("text") + "  (" + sla.optString("kind") + ", " + (if (sla.optInt("hours") % 24 == 0) (sla.optInt("hours") / 24).toString() + "d" else sla.optInt("hours").toString() + "h") + " SLA)",
+                    color = if (late) slaRed else if (soon) Color(0xFFD97706) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (late) FontWeight.Bold else FontWeight.Medium,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(item.optString("title"), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(current, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)

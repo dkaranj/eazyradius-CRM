@@ -163,6 +163,29 @@ function mobile_api()
                 mobile_api_checkin($s);
 
             // ---- staff: audit log ----
+            // ---- store ----
+            case 'store_overview':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_overview($s);
+            case 'store_meta':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_meta($s);
+            case 'store_requests':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_requests($s);
+            case 'store_request_create':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_request_create($s);
+            case 'store_request_decide':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_request_decide($s);
+            case 'store_receive':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_receive($s);
+            case 'store_use':
+                mobile_api_mod($s, 'store');
+                mobile_api_store_use($s);
+
             case 'audit_list':
                 mobile_api_mod($s, 'audit');
                 mobile_api_audit_list($s);
@@ -927,6 +950,7 @@ function mobile_api_ops_item($meta, $a)
         'created' => $g('created'),
         'assignee_id' => $aid,
         'assignee' => $aname,
+        'sla' => mobile_api_sla($meta, $a),
         'customer_username' => ($meta['entity'] === 'ticket' && isset($a['description']) && preg_match('/^Username:\s*(\S+)/mi', (string) $a['description'], $mm)) ? $mm[1] : '',
     ];
 }
@@ -1107,10 +1131,23 @@ function mobile_api_ops_list($s)
     foreach ($orm->limit(150)->find_many() as $r) {
         $items[] = mobile_api_ops_item($meta, $r->as_array());
     }
+    // past-SLA work first, the most overdue at the very top
+    $overdue = 0;
+    foreach ($items as $it) {
+        if (!empty($it['sla']['overdue'])) $overdue++;
+    }
+    usort($items, function ($x, $y) {
+        $a = !empty($x['sla']['overdue']);
+        $b = !empty($y['sla']['overdue']);
+        if ($a !== $b) return $a ? -1 : 1;
+        if ($a && $b) return $x['sla']['left_min'] <=> $y['sla']['left_min'];
+        return $y['id'] <=> $x['id'];
+    });
     $hasAssign = (bool) ($meta['map']['assignee'] || !empty($meta['sidecar']));
     mobile_api_out([
         'ok' => true,
         'items' => $items,
+        'overdue' => $overdue,
         'statuses' => mobile_api_ops_status_list($meta, $s),
         'techs' => $perm ? mobile_api_ops_techs() : [],
         'can_create' => $e !== 'install' && !empty($s['access']['create']),
@@ -1714,6 +1751,7 @@ function mobile_api_catalog()
         ['key' => 'leads', 'label' => 'Leads', 'group' => 'Operations'],
         ['key' => 'installations', 'label' => 'Installations', 'group' => 'Operations'],
         ['key' => 'support', 'label' => 'Support tickets', 'group' => 'Operations'],
+        ['key' => 'store', 'label' => 'Store: stock, requests, usage', 'group' => 'Operations'],
         ['key' => 'my_hr', 'label' => 'My HR: clock in, leave, payslips', 'group' => 'HR'],
         ['key' => 'hr_employees', 'label' => 'Employees', 'group' => 'HR'],
         ['key' => 'hr_attendance', 'label' => 'Attendance', 'group' => 'HR'],
@@ -1742,7 +1780,7 @@ function mobile_api_default_access($key)
         case 'type:Agent':
             return ['modules' => ['leads', 'customers', 'my_hr'], 'scope' => 'all', 'assign' => false, 'create' => true];
         case 'tech':
-            return ['modules' => ['installations', 'support', 'leads', 'onu', 'my_hr'], 'scope' => 'mine', 'assign' => false, 'create' => true];
+            return ['modules' => ['installations', 'support', 'leads', 'store', 'onu', 'my_hr'], 'scope' => 'mine', 'assign' => false, 'create' => true];
     }
     return null;
 }
@@ -2430,7 +2468,7 @@ function mobile_api_rows($sql, $args = [])
 /** Actions the phone may queue while offline and replay later. Each is safe to receive twice thanks to op_id. */
 function mobile_api_queueable()
 {
-    return ['ops_create', 'ops_update', 'hr_clock', 'hr_leave_request', 'checkin'];
+    return ['ops_create', 'ops_update', 'hr_clock', 'hr_leave_request', 'checkin', 'store_request_create', 'store_use'];
 }
 
 /** Actions that change something, and so belong in the audit log. */
@@ -2443,6 +2481,7 @@ function mobile_api_audited()
         'client_buy' => 'purchase', 'hr_clock' => 'clock', 'hr_leave_request' => 'leave_request',
         'hr_employee_save' => 'employee_save', 'hr_leave_decide' => 'leave_decide',
         'onu_reboot' => 'onu_reboot', 'logout' => 'logout', 'photo_add' => 'photo', 'checkin' => 'checkin',
+        'store_request_create' => 'stock_request', 'store_request_decide' => 'stock_decide', 'store_receive' => 'stock_receive', 'store_use' => 'stock_use',
     ];
 }
 
@@ -2586,6 +2625,21 @@ function mobile_api_ticket_meta()
     try {
         foreach (mobile_api_rows('SELECT id, name FROM tbl_support_categories ORDER BY name') as $c) {
             $cats[] = ['id' => (int) $c['id'], 'name' => $c['name']];
+        }
+    } catch (Throwable $e) {
+    }
+    // the SLA has a separate 2-day clock for relocations, so the form needs that category
+    try {
+        $has = false;
+        foreach ($cats as $c) {
+            if (stripos($c['name'], 'reloc') !== false) $has = true;
+        }
+        if (!$has) {
+            ORM::get_db()->prepare('INSERT INTO tbl_support_categories (name) VALUES (?)')->execute(['Relocation']);
+            $cats = [];
+            foreach (mobile_api_rows('SELECT id, name FROM tbl_support_categories ORDER BY name') as $c) {
+                $cats[] = ['id' => (int) $c['id'], 'name' => $c['name']];
+            }
         }
     } catch (Throwable $e) {
     }
@@ -3016,6 +3070,11 @@ function mobile_api_notify_poll($s)
     $maxId = $last && $last[0]['m'] ? (int) $last[0]['m'] : 0;
     $init = ($sinceId === 0 && $sinceTs === 0);
     if (!$init) {
+        if (mt_rand(1, 3) === 1) {
+            mobile_api_sla_scan($s);
+            $last = mobile_api_rows('SELECT MAX(id) m FROM tbl_mobile_notify WHERE user_id = ?', [$uid]);
+            $maxId = $last && $last[0]['m'] ? (int) $last[0]['m'] : 0;
+        }
         foreach (mobile_api_rows('SELECT id, kind, title, body, entity, entity_id, created_at FROM tbl_mobile_notify WHERE user_id = ? AND id > ? ORDER BY id LIMIT 30', [$uid, $sinceId]) as $n) {
             $items[] = ['key' => 'n' . $n['id'], 'kind' => $n['kind'], 'title' => $n['title'], 'body' => $n['body'], 'entity' => $n['entity'], 'id' => $n['entity_id'], 'time' => $n['created_at']];
         }
@@ -3266,4 +3325,371 @@ function mobile_api_visit_info($s)
             'time' => $c['client_time'] ?: $c['created_at']];
     }
     mobile_api_out(['ok' => true, 'photos' => $photos, 'checkins' => $checks]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SLA: installation 3 days, support ticket 1 day, relocation 2 days    */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_sla_cfg($key, $default)
+{
+    global $config;
+    return isset($config[$key]) && (int) $config[$key] > 0 ? (int) $config[$key] : $default;
+}
+
+function mobile_api_sla_cat_name($id)
+{
+    static $names = null;
+    if ($names === null) {
+        $names = [];
+        try {
+            foreach (mobile_api_rows('SELECT id, name FROM tbl_support_categories') as $c) {
+                $names[(int) $c['id']] = strtolower($c['name']);
+            }
+        } catch (Throwable $e) {
+        }
+    }
+    return isset($names[(int) $id]) ? $names[(int) $id] : '';
+}
+
+/** SLA state for a ticket or installation row, or null when no clock applies (leads, finished work). */
+function mobile_api_sla($meta, $a)
+{
+    $e = $meta['entity'];
+    if ($e !== 'ticket' && $e !== 'install') return null;
+    $m = $meta['map'];
+    $status = ($m['status'] && isset($a[$m['status']])) ? strtolower(trim((string) $a[$m['status']])) : '';
+    $done = $e === 'ticket'
+        ? ['resolved', 'closed']
+        : ['completed', 'complete', 'cancelled', 'canceled', 'failed', 'awaiting_payment'];
+    if (in_array($status, $done, true)) return null;
+    $startRaw = ($m['created'] && isset($a[$m['created']])) ? $a[$m['created']] : '';
+    $start = $startRaw ? strtotime($startRaw) : 0;
+    if ($start <= 0) return null;
+
+    $text = strtolower(implode(' ', array_filter([
+        isset($a['title']) ? $a['title'] : '', isset($a['notes']) ? $a['notes'] : '', isset($a['description']) ? $a['description'] : '',
+        isset($a['plan_name']) ? $a['plan_name'] : '', isset($a['job_type']) ? $a['job_type'] : '',
+        isset($a['category_id']) ? mobile_api_sla_cat_name($a['category_id']) : '',
+    ])));
+    $kind = $e === 'install' ? 'installation' : 'support';
+    $hours = $e === 'install' ? mobile_api_sla_cfg('mobile_sla_install_h', 72) : mobile_api_sla_cfg('mobile_sla_ticket_h', 24);
+    if (strpos($text, 'relocat') !== false) {
+        $kind = 'relocation';
+        $hours = mobile_api_sla_cfg('mobile_sla_relocation_h', 48);
+    }
+    $due = $start + $hours * 3600;
+    $left = (int) floor(($due - time()) / 60);
+    $abs = abs($left);
+    $d = intdiv($abs, 1440);
+    $h = intdiv($abs % 1440, 60);
+    $txt = $d > 0 ? $d . 'd ' . $h . 'h' : ($h > 0 ? $h . 'h ' . ($abs % 60) . 'm' : ($abs % 60) . 'm');
+    return [
+        'kind' => $kind, 'hours' => $hours, 'due' => date('Y-m-d H:i', $due), 'overdue' => $left < 0, 'left_min' => $left,
+        'text' => $left < 0 ? 'Overdue by ' . $txt : 'Due in ' . $txt,
+    ];
+}
+
+/** Tell the assignee (or a manager who sees everything) once when something goes past its SLA. */
+function mobile_api_sla_scan($s)
+{
+    try {
+        $uid = (int) $s['user_id'];
+        $sees = ($s['access']['scope'] === 'all' && !empty($s['access']['assign']));
+        $have = [];
+        foreach (mobile_api_rows("SELECT entity, entity_id FROM tbl_mobile_notify WHERE user_id = ? AND kind = 'sla'", [$uid]) as $r) {
+            $have[$r['entity'] . ':' . $r['entity_id']] = true;
+        }
+        foreach (['ticket', 'install'] as $e) {
+            if (!in_array($e, mobile_api_ops_allowed($s), true)) continue;
+            $meta = mobile_api_ops_meta($e);
+            if (!$meta) continue;
+            $orm = ORM::for_table($meta['table'])->order_by_desc('id')->limit(200);
+            if (!$sees) {
+                if (!$uid) continue;
+                mobile_api_ops_scope($orm, $meta, $uid);
+            }
+            foreach ($orm->find_many() as $row) {
+                $sla = mobile_api_sla($meta, $row->as_array());
+                if (!$sla || !$sla['overdue'] || isset($have[$e . ':' . $row['id']])) continue;
+                $it = mobile_api_ops_item($meta, $row->as_array());
+                if (!$sees && !mobile_api_ops_is_mine($meta, $row->as_array(), $uid)) continue;
+                mobile_api_notify($uid, 'sla', ucfirst($sla['kind']) . ' past its SLA', $it['title'] . ' (' . $sla['hours'] / 24 . ' day SLA, ' . $sla['text'] . ')', $e, (int) $row['id']);
+            }
+        }
+    } catch (Throwable $e) {
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* store: stock is the sum of the movements in tbl_store_moves          */
+/* (holder 0 = warehouse, otherwise the technician's user id)           */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_store_manager($s)
+{
+    return !empty($s['access']['assign']) || !empty($s['access']['super']);
+}
+
+function mobile_api_store_need_manager($s)
+{
+    if (!mobile_api_store_manager($s)) {
+        mobile_api_fail('Only people who can assign work may do this in the store', 403);
+    }
+}
+
+function mobile_api_store_qty($itemId, $holder)
+{
+    $r = mobile_api_rows('SELECT COALESCE(SUM(qty),0) q FROM tbl_store_moves WHERE item_id = ? AND holder_id = ?', [(int) $itemId, (int) $holder]);
+    return (float) $r[0]['q'];
+}
+
+function mobile_api_store_num($v)
+{
+    $f = round((float) $v, 2);
+    return $f == floor($f) ? (string) (int) $f : (string) $f;
+}
+
+function mobile_api_store_overview($s)
+{
+    $uid = (int) $s['user_id'];
+    $mgr = mobile_api_store_manager($s);
+    $items = mobile_api_rows('SELECT id, sku, name, category, unit, min_stock FROM tbl_store_items WHERE active = 1 ORDER BY name');
+    $sums = [];
+    foreach (mobile_api_rows('SELECT item_id, holder_id, SUM(qty) q FROM tbl_store_moves GROUP BY item_id, holder_id') as $r) {
+        $sums[(int) $r['item_id']][(int) $r['holder_id']] = (float) $r['q'];
+    }
+    $names = mobile_api_user_names();
+    $out = [];
+    $low = 0;
+    foreach ($items as $i) {
+        $id = (int) $i['id'];
+        $h = isset($sums[$id]) ? $sums[$id] : [];
+        $wh = isset($h[0]) ? $h[0] : 0.0;
+        $mine = isset($h[$uid]) ? $h[$uid] : 0.0;
+        $isLow = $wh < (float) $i['min_stock'];
+        if ($isLow) $low++;
+        $row = ['id' => $id, 'sku' => $i['sku'], 'name' => $i['name'], 'category' => $i['category'], 'unit' => $i['unit'],
+            'min' => mobile_api_store_num($i['min_stock']), 'warehouse' => mobile_api_store_num($wh), 'mine' => mobile_api_store_num($mine), 'low' => $isLow];
+        if ($mgr) {
+            $held = [];
+            foreach ($h as $hid => $q) {
+                if ($hid > 0 && $q > 0.0001) $held[] = ['id' => $hid, 'name' => isset($names[$hid]) ? $names[$hid] : '#' . $hid, 'qty' => mobile_api_store_num($q)];
+            }
+            $row['held'] = $held;
+        }
+        $out[] = $row;
+    }
+    $pending = mobile_api_rows("SELECT COUNT(*) n FROM tbl_store_requests WHERE status NOT IN ('approved','rejected','cancelled')" . ($mgr ? '' : ' AND tech_id = ' . $uid));
+    mobile_api_out(['ok' => true, 'manager' => $mgr, 'items' => $out, 'stats' => ['items' => count($out), 'low' => $low, 'pending' => (int) $pending[0]['n']]]);
+}
+
+function mobile_api_store_meta($s)
+{
+    $items = [];
+    foreach (mobile_api_rows('SELECT id, name, unit FROM tbl_store_items WHERE active = 1 ORDER BY name') as $i) {
+        $items[] = ['id' => (int) $i['id'], 'name' => $i['name'], 'unit' => $i['unit']];
+    }
+    $kits = [];
+    foreach (mobile_api_rows('SELECT id, name FROM tbl_store_kits ORDER BY name') as $k) {
+        $lines = [];
+        foreach (mobile_api_rows('SELECT item_id, qty FROM tbl_store_kit_items WHERE kit_id = ?', [(int) $k['id']]) as $l) {
+            $lines[] = ['item_id' => (int) $l['item_id'], 'qty' => mobile_api_store_num($l['qty'])];
+        }
+        $kits[] = ['id' => (int) $k['id'], 'name' => $k['name'], 'lines' => $lines];
+    }
+    $jobs = [];
+    try {
+        $meta = mobile_api_ops_meta('install');
+        if ($meta && in_array('installations', $s['access']['modules'], true)) {
+            $orm = ORM::for_table($meta['table'])->order_by_desc('id')->limit(40);
+            $uid = mobile_api_scope_uid($s);
+            if ($uid) mobile_api_ops_scope($orm, $meta, $uid);
+            foreach ($orm->find_many() as $r) {
+                $it = mobile_api_ops_item($meta, $r->as_array());
+                if (in_array(strtolower($it['status']), ['completed', 'complete', 'cancelled', 'canceled', 'failed'], true)) continue;
+                $jobs[] = ['id' => $it['id'], 'title' => $it['title'], 'status' => $it['status']];
+            }
+        }
+    } catch (Throwable $e) {
+    }
+    mobile_api_out(['ok' => true, 'items' => $items, 'kits' => $kits, 'jobs' => $jobs, 'techs' => mobile_api_store_manager($s) ? mobile_api_ops_techs() : []]);
+}
+
+function mobile_api_store_requests($s)
+{
+    $mgr = mobile_api_store_manager($s);
+    $uid = (int) $s['user_id'];
+    $rows = mobile_api_rows('SELECT * FROM tbl_store_requests' . ($mgr ? '' : ' WHERE tech_id = ' . $uid) . ' ORDER BY id DESC LIMIT 60');
+    $names = mobile_api_user_names();
+    $itemNames = [];
+    foreach (mobile_api_rows('SELECT id, name, unit FROM tbl_store_items') as $i) {
+        $itemNames[(int) $i['id']] = $i;
+    }
+    $out = [];
+    foreach ($rows as $r) {
+        $lines = [];
+        foreach (mobile_api_rows('SELECT item_id, qty_req, qty_ok FROM tbl_store_request_items WHERE request_id = ?', [(int) $r['id']]) as $l) {
+            $iid = (int) $l['item_id'];
+            $lines[] = ['item_id' => $iid, 'name' => isset($itemNames[$iid]) ? $itemNames[$iid]['name'] : '#' . $iid,
+                'unit' => isset($itemNames[$iid]) ? $itemNames[$iid]['unit'] : '',
+                'qty_req' => mobile_api_store_num($l['qty_req']), 'qty_ok' => mobile_api_store_num($l['qty_ok'])];
+        }
+        $tid = (int) $r['tech_id'];
+        $out[] = ['id' => (int) $r['id'], 'req_no' => $r['req_no'], 'tech_id' => $tid, 'tech' => isset($names[$tid]) ? $names[$tid] : '#' . $tid,
+            'status' => $r['status'], 'note' => (string) $r['note'], 'admin_note' => (string) $r['admin_note'], 'created' => $r['created_at'],
+            'decided' => $r['decided_at'], 'items' => $lines,
+            'pending' => !in_array($r['status'], ['approved', 'rejected', 'cancelled'], true)];
+    }
+    mobile_api_out(['ok' => true, 'manager' => $mgr, 'requests' => $out]);
+}
+
+/** "3:2,5:10" -> [[item_id, qty], ...] with every id checked against the active items. */
+function mobile_api_store_parse_lines($raw)
+{
+    $out = [];
+    foreach (explode(',', (string) $raw) as $part) {
+        $bits = explode(':', trim($part));
+        if (count($bits) !== 2) continue;
+        $id = (int) $bits[0];
+        $q = round((float) $bits[1], 2);
+        if ($id > 0 && $q > 0 && $q <= 100000) $out[$id] = (isset($out[$id]) ? $out[$id] : 0) + $q;
+    }
+    if (!$out) mobile_api_fail('Choose at least one item and a quantity', 422);
+    $ids = array_keys($out);
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $found = mobile_api_rows('SELECT id FROM tbl_store_items WHERE active = 1 AND id IN (' . $in . ')', $ids);
+    if (count($found) !== count($ids)) mobile_api_fail('One of the items is not in the store any more', 422);
+    return $out;
+}
+
+function mobile_api_store_request_create($s)
+{
+    $lines = mobile_api_store_parse_lines(mobile_api_in('items'));
+    $tech = (int) $s['user_id'];
+    $forId = (int) mobile_api_in('tech_id', 0);
+    if ($forId > 0 && $forId !== $tech) {
+        mobile_api_store_need_manager($s);
+        $tech = $forId;
+    }
+    $db = ORM::get_db();
+    $db->beginTransaction();
+    try {
+        $db->prepare('INSERT INTO tbl_store_requests (req_no, tech_id, status, note, admin_note, created_by, created_at) VALUES (?,?,?,?,?,?,?)')
+            ->execute(['', $tech, 'pending', mb_substr(trim((string) mobile_api_in('note')), 0, 255), '', (int) $s['user_id'], date('Y-m-d H:i:s')]);
+        $id = (int) $db->lastInsertId();
+        $no = sprintf('REQ%05d', $id);
+        $db->prepare('UPDATE tbl_store_requests SET req_no = ? WHERE id = ?')->execute([$no, $id]);
+        foreach ($lines as $iid => $q) {
+            $db->prepare('INSERT INTO tbl_store_request_items (request_id, item_id, qty_req, qty_ok) VALUES (?,?,?,0)')->execute([$id, $iid, $q]);
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        $db->rollBack();
+        throw $e;
+    }
+    mobile_api_notify_managers('store', true, 'stock_request', 'Stock request ' . $no, $s['access']['name'] . ' asked for ' . count($lines) . ' item(s)', 'store', $id, (int) $s['user_id']);
+    mobile_api_out(['ok' => true, 'id' => $id, 'message' => 'Request ' . $no . ' sent']);
+}
+
+function mobile_api_store_request_decide($s)
+{
+    mobile_api_store_need_manager($s);
+    $id = (int) mobile_api_in('id');
+    $d = (string) mobile_api_in('decision');
+    if (!in_array($d, ['approve', 'reject'], true)) mobile_api_fail('Choose approve or reject', 422);
+    $db = ORM::get_db();
+    $fail = function ($m, $c) use ($db) {
+        if ($db->inTransaction()) $db->rollBack();
+        mobile_api_fail($m, $c);
+    };
+    $db->beginTransaction();
+    try {
+        $r = mobile_api_rows('SELECT * FROM tbl_store_requests WHERE id = ? FOR UPDATE', [$id]);
+        if (!$r) $fail('Request not found', 404);
+        $r = $r[0];
+        if (in_array($r['status'], ['approved', 'rejected', 'cancelled'], true)) {
+            $fail('This request was already ' . $r['status'], 409);
+        }
+        $now = date('Y-m-d H:i:s');
+        $note = mb_substr(trim((string) mobile_api_in('note')), 0, 255);
+        $summary = [];
+        if ($d === 'approve') {
+            $over = [];
+            foreach (explode(',', (string) mobile_api_in('qty')) as $p) {
+                $b = explode(':', trim($p));
+                if (count($b) === 2) $over[(int) $b[0]] = max(0, round((float) $b[1], 2));
+            }
+            foreach (mobile_api_rows('SELECT id, item_id, qty_req FROM tbl_store_request_items WHERE request_id = ?', [$id]) as $l) {
+                $iid = (int) $l['item_id'];
+                $q = isset($over[$iid]) ? $over[$iid] : (float) $l['qty_req'];
+                if ($q <= 0) continue;
+                $avail = mobile_api_store_qty($iid, 0);
+                if ($q > $avail + 0.0001) {
+                    $nm = mobile_api_rows('SELECT name FROM tbl_store_items WHERE id = ?', [$iid]);
+                    $fail('Not enough ' . ($nm ? $nm[0]['name'] : 'stock') . ' in the warehouse (' . mobile_api_store_num($avail) . ' left). Lower the quantity.', 422);
+                }
+                $ins = $db->prepare('INSERT INTO tbl_store_moves (item_id, holder_id, qty, kind, ref_type, ref_id, note, by_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)');
+                $ins->execute([$iid, 0, -$q, 'issue', 'request', $id, $r['req_no'], (int) $s['user_id'], $now]);
+                $ins->execute([$iid, (int) $r['tech_id'], $q, 'issue', 'request', $id, $r['req_no'], (int) $s['user_id'], $now]);
+                $db->prepare('UPDATE tbl_store_request_items SET qty_ok = ? WHERE id = ?')->execute([$q, (int) $l['id']]);
+                $summary[] = mobile_api_store_num($q);
+            }
+        }
+        $db->prepare('UPDATE tbl_store_requests SET status = ?, admin_note = ?, decided_by = ?, decided_at = ? WHERE id = ?')
+            ->execute([$d === 'approve' ? 'approved' : 'rejected', $note, (int) $s['user_id'], $now, $id]);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        throw $e;
+    }
+    mobile_api_notify((int) $r['tech_id'], 'stock_' . $d, 'Stock request ' . ($d === 'approve' ? 'approved' : 'rejected'), $r['req_no'] . ($note !== '' ? ': ' . $note : ''), 'store', $id);
+    mobile_api_out(['ok' => true, 'message' => $r['req_no'] . ($d === 'approve' ? ' approved and issued' : ' rejected')]);
+}
+
+function mobile_api_store_receive($s)
+{
+    mobile_api_store_need_manager($s);
+    $iid = (int) mobile_api_in('item_id');
+    $q = round((float) mobile_api_in('qty'), 2);
+    if ($q <= 0 || $q > 1000000) mobile_api_fail('Enter a quantity', 422);
+    if (!mobile_api_rows('SELECT id FROM tbl_store_items WHERE id = ? AND active = 1', [$iid])) mobile_api_fail('Item not found', 404);
+    ORM::get_db()->prepare('INSERT INTO tbl_store_moves (item_id, holder_id, qty, kind, serial, note, by_id, created_at) VALUES (?,?,?,?,?,?,?,?)')
+        ->execute([$iid, 0, $q, 'receive', mb_substr(trim((string) mobile_api_in('serial')), 0, 80) ?: null, mb_substr(trim((string) mobile_api_in('note')), 0, 255) ?: null, (int) $s['user_id'], date('Y-m-d H:i:s')]);
+    mobile_api_out(['ok' => true, 'message' => 'Stock received', 'warehouse' => mobile_api_store_num(mobile_api_store_qty($iid, 0))]);
+}
+
+/** A technician records items used on a job; it comes out of what they hold. */
+function mobile_api_store_use($s)
+{
+    $uid = (int) $s['user_id'];
+    $iid = (int) mobile_api_in('item_id');
+    $q = round((float) mobile_api_in('qty'), 2);
+    if ($q <= 0 || $q > 100000) mobile_api_fail('Enter a quantity', 422);
+    $item = mobile_api_rows('SELECT id, name FROM tbl_store_items WHERE id = ? AND active = 1', [$iid]);
+    if (!$item) mobile_api_fail('Item not found', 404);
+    $have = mobile_api_store_qty($iid, $uid);
+    if ($q > $have + 0.0001) mobile_api_fail('You only hold ' . mobile_api_store_num($have) . ' of ' . $item[0]['name'], 422);
+    $job = (int) mobile_api_in('job_id', 0);
+    $serial = mb_substr(trim((string) mobile_api_in('serial')), 0, 80);
+    $db = ORM::get_db();
+    if ($job > 0) {
+        $meta = mobile_api_ops_meta('install');
+        $row = $meta ? ORM::for_table($meta['table'])->find_one($job) : null;
+        if (!$row) mobile_api_fail('Installation not found', 404);
+        $su = mobile_api_scope_uid($s);
+        if ($su && !mobile_api_ops_is_mine($meta, $row->as_array(), $su)) mobile_api_fail('This installation is not assigned to you', 403);
+    }
+    $db->prepare('INSERT INTO tbl_store_moves (item_id, holder_id, qty, kind, ref_type, ref_id, serial, note, by_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        ->execute([$iid, $uid, -$q, 'use', $job > 0 ? 'job' : null, $job > 0 ? $job : null, $serial ?: null, mb_substr(trim((string) mobile_api_in('note')), 0, 255) ?: null, $uid, date('Y-m-d H:i:s')]);
+    if ($job > 0) {
+        try {
+            $db->prepare('INSERT INTO tbl_installation_items (job_id, item, serial, qty, store_item_id, store_holder) VALUES (?,?,?,?,?,?)')
+                ->execute([$job, $item[0]['name'], $serial, $q, $iid, $uid]);
+        } catch (Throwable $e) {
+        }
+    }
+    mobile_api_out(['ok' => true, 'message' => 'Recorded. You now hold ' . mobile_api_store_num($have - $q) . ' of ' . $item[0]['name']]);
 }
