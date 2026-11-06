@@ -160,6 +160,7 @@ fun WifiDialog(onClose: () -> Unit) {
     )
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 /** Customer's own tickets, a form to raise one, and the conversation on each. */
 @Composable
 fun ClientSupport(reload: Int) {
@@ -175,7 +176,7 @@ fun ClientSupport(reload: Int) {
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(list) { t ->
-                    Card(Modifier.fillMaxWidth(), onClick = { open = t }) {
+                    Card(onClick = { open = t }, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(14.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(t.optString("title"), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
