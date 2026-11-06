@@ -289,6 +289,10 @@ private fun OpsCard(
             KeyValue("Priority", item.optString("priority"))
             KeyValue("Phone", phone)
             KeyValue("Address", address)
+            val pay = item.optJSONObject("pay")
+            if (pay != null && pay.optString("status").isNotBlank() && pay.optString("status") != "none") {
+                KeyValue("Payment", pay.optString("status").uppercase() + " · " + pay.optString("paid") + " of " + pay.optString("due"))
+            }
             KeyValue("Created", item.optString("created"))
             KeyValue("Assigned to", if (who.isBlank()) "Unassigned" else who)
             Spacer(Modifier.height(8.dp))

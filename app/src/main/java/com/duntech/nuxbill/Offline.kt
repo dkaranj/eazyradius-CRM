@@ -26,7 +26,7 @@ object Offline {
 
     /** Answers that must always be live (or fail). */
     val neverCache = setOf("login", "logout", "ping", "onu_reboot", "admin_recharge", "client_buy", "admin_user_save", "admin_user_delete",
-        "access_save", "access_reset", "hr_employee_save", "hr_leave_decide", "store_request_decide", "store_receive", "photo_add", "photo_get", "notify_poll") + queueable
+        "access_save", "access_reset", "hr_employee_save", "hr_leave_decide", "store_request_decide", "store_receive", "inst_pay_record", "inst_pay_waive", "photo_add", "photo_get", "notify_poll") + queueable
 
     var pending by mutableIntStateOf(0)
         private set

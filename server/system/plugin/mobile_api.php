@@ -163,6 +163,20 @@ function mobile_api()
                 mobile_api_checkin($s);
 
             // ---- staff: audit log ----
+            // ---- installation payments ----
+            case 'inst_pay_list':
+                mobile_api_mod($s, 'install_pay');
+                mobile_api_instpay_list($s);
+            case 'inst_pay_detail':
+                mobile_api_mod($s, 'install_pay');
+                mobile_api_instpay_detail($s);
+            case 'inst_pay_record':
+                mobile_api_mod($s, 'install_pay');
+                mobile_api_instpay_record($s);
+            case 'inst_pay_waive':
+                mobile_api_mod($s, 'install_pay');
+                mobile_api_instpay_waive($s);
+
             // ---- store ----
             case 'store_overview':
                 mobile_api_mod($s, 'store');
@@ -951,6 +965,10 @@ function mobile_api_ops_item($meta, $a)
         'assignee_id' => $aid,
         'assignee' => $aname,
         'sla' => mobile_api_sla($meta, $a),
+        'pay' => ($meta['entity'] === 'install' && isset($a['pay_status'])) ? [
+            'status' => (string) $a['pay_status'], 'due' => mobile_api_money(isset($a['amount_due']) ? $a['amount_due'] : 0),
+            'paid' => mobile_api_money(isset($a['amount_paid']) ? $a['amount_paid'] : 0),
+        ] : null,
         'customer_username' => ($meta['entity'] === 'ticket' && isset($a['description']) && preg_match('/^Username:\s*(\S+)/mi', (string) $a['description'], $mm)) ? $mm[1] : '',
     ];
 }
@@ -1752,6 +1770,7 @@ function mobile_api_catalog()
         ['key' => 'installations', 'label' => 'Installations', 'group' => 'Operations'],
         ['key' => 'support', 'label' => 'Support tickets', 'group' => 'Operations'],
         ['key' => 'store', 'label' => 'Store: stock, requests, usage', 'group' => 'Operations'],
+        ['key' => 'install_pay', 'label' => 'Installation payments', 'group' => 'Operations'],
         ['key' => 'my_hr', 'label' => 'My HR: clock in, leave, payslips', 'group' => 'HR'],
         ['key' => 'hr_employees', 'label' => 'Employees', 'group' => 'HR'],
         ['key' => 'hr_attendance', 'label' => 'Attendance', 'group' => 'HR'],
@@ -2482,6 +2501,7 @@ function mobile_api_audited()
         'hr_employee_save' => 'employee_save', 'hr_leave_decide' => 'leave_decide',
         'onu_reboot' => 'onu_reboot', 'logout' => 'logout', 'photo_add' => 'photo', 'checkin' => 'checkin',
         'store_request_create' => 'stock_request', 'store_request_decide' => 'stock_decide', 'store_receive' => 'stock_receive', 'store_use' => 'stock_use',
+        'inst_pay_record' => 'install_payment', 'inst_pay_waive' => 'install_waive',
     ];
 }
 
@@ -3072,6 +3092,7 @@ function mobile_api_notify_poll($s)
     if (!$init) {
         if (mt_rand(1, 3) === 1) {
             mobile_api_sla_scan($s);
+            mobile_api_pay_scan($s);
             $last = mobile_api_rows('SELECT MAX(id) m FROM tbl_mobile_notify WHERE user_id = ?', [$uid]);
             $maxId = $last && $last[0]['m'] ? (int) $last[0]['m'] : 0;
         }
@@ -3692,4 +3713,183 @@ function mobile_api_store_use($s)
         }
     }
     mobile_api_out(['ok' => true, 'message' => 'Recorded. You now hold ' . mobile_api_store_num($have - $q) . ' of ' . $item[0]['name']]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* installation payments (same tables as the website Installations plugin) */
+/* Completing the job and activating the plan stay in that plugin.       */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_instpay_manager($s)
+{
+    return !empty($s['access']['assign']) || !empty($s['access']['super']);
+}
+
+function mobile_api_instpay_need_manager($s)
+{
+    if (!mobile_api_instpay_manager($s)) {
+        mobile_api_fail('Only people who can assign work may record or waive payments', 403);
+    }
+}
+
+function mobile_api_instpay_row($r, $names)
+{
+    $due = (float) $r['amount_due'];
+    $paid = (float) $r['amount_paid'];
+    $tid = (int) $r['technician_id'];
+    return [
+        'id' => (int) $r['id'], 'job_no' => $r['job_no'], 'customer' => $r['customer_name'], 'phone' => $r['phone'], 'plan' => $r['plan_name'],
+        'status' => $r['status'], 'pay_status' => $r['pay_status'], 'note' => (string) $r['pay_note'],
+        'due' => mobile_api_money($due), 'paid' => mobile_api_money($paid), 'balance' => mobile_api_money(max(0, $due - $paid)),
+        'balance_raw' => max(0, $due - $paid), 'requested' => $r['pay_requested_at'],
+        'technician' => $tid && isset($names[$tid]) ? $names[$tid] : '',
+    ];
+}
+
+function mobile_api_instpay_list($s)
+{
+    $names = mobile_api_user_names();
+    $filter = (string) mobile_api_in('filter');
+    $where = ["status NOT IN ('cancelled')"];
+    if ($filter === 'unpaid') {
+        $where[] = "pay_status IN ('awaiting','none','') AND amount_due > amount_paid";
+    } elseif ($filter === 'paid') {
+        $where[] = "pay_status IN ('paid','waived')";
+    }
+    $uid = mobile_api_scope_uid($s);
+    if ($uid) $where[] = 'technician_id = ' . (int) $uid;
+    $rows = mobile_api_rows('SELECT * FROM tbl_installations WHERE ' . implode(' AND ', $where) . ' ORDER BY (pay_status = "awaiting") DESC, id DESC LIMIT 100');
+    $out = [];
+    foreach ($rows as $r) $out[] = mobile_api_instpay_row($r, $names);
+    $stats = mobile_api_rows("SELECT
+        SUM(CASE WHEN pay_status = 'awaiting' THEN 1 ELSE 0 END) waiting,
+        SUM(CASE WHEN pay_status IN ('awaiting','none','') AND status NOT IN ('cancelled','completed') THEN GREATEST(amount_due - amount_paid, 0) ELSE 0 END) owed
+        FROM tbl_installations WHERE status <> 'cancelled'" . ($uid ? ' AND technician_id = ' . (int) $uid : ''));
+    $today = mobile_api_rows('SELECT COALESCE(SUM(amount),0) a FROM tbl_installation_payments WHERE created_at >= ?', [date('Y-m-d 00:00:00')]);
+    mobile_api_out(['ok' => true, 'manager' => mobile_api_instpay_manager($s), 'rows' => $out,
+        'stats' => ['waiting' => (int) $stats[0]['waiting'], 'owed' => mobile_api_money($stats[0]['owed']), 'today' => mobile_api_money($today[0]['a'])]]);
+}
+
+function mobile_api_instpay_job($s, $forUpdate = false)
+{
+    $rows = mobile_api_rows('SELECT * FROM tbl_installations WHERE id = ?' . ($forUpdate ? ' FOR UPDATE' : ''), [(int) mobile_api_in('id')]);
+    if (!$rows) mobile_api_fail('Installation not found', 404);
+    $uid = mobile_api_scope_uid($s);
+    if ($uid && (int) $rows[0]['technician_id'] !== (int) $uid) mobile_api_fail('This installation is not assigned to you', 403);
+    return $rows[0];
+}
+
+function mobile_api_instpay_detail($s)
+{
+    $r = mobile_api_instpay_job($s);
+    $names = mobile_api_user_names();
+    $hist = [];
+    foreach (mobile_api_rows('SELECT method, ref, amount, payer, note, created_by, created_at FROM tbl_installation_payments WHERE job_id = ? ORDER BY id DESC', [(int) $r['id']]) as $p) {
+        $hist[] = ['method' => $p['method'], 'ref' => $p['ref'], 'amount' => mobile_api_money($p['amount']), 'payer' => (string) $p['payer'],
+            'note' => (string) $p['note'], 'by' => $p['created_by'], 'time' => $p['created_at']];
+    }
+    // M-Pesa payments sent to this job number that nobody has claimed yet
+    $suggest = [];
+    try {
+        $sql = 'SELECT TransID, TransAmount, FirstName, BillRefNumber, TransTime FROM tbl_mpesa_transactions WHERE LOWER(BillRefNumber) = LOWER(?)
+                AND TransID NOT IN (SELECT ref FROM tbl_installation_payments WHERE ref IS NOT NULL) AND TransID NOT IN (SELECT trans_id FROM tbl_c2b_manual) ORDER BY id DESC LIMIT 5';
+        foreach (mobile_api_rows($sql, [$r['job_no']]) as $t) {
+            $suggest[] = ['code' => $t['TransID'], 'amount' => mobile_api_money($t['TransAmount']), 'name' => $t['FirstName'], 'time' => $t['TransTime']];
+        }
+    } catch (Throwable $e) {
+    }
+    mobile_api_out(['ok' => true, 'manager' => mobile_api_instpay_manager($s), 'job' => mobile_api_instpay_row($r, $names), 'history' => $hist, 'suggested' => $suggest]);
+}
+
+function mobile_api_instpay_record($s)
+{
+    mobile_api_instpay_need_manager($s);
+    $method = (string) mobile_api_in('method');
+    if (!in_array($method, ['cash', 'mpesa'], true)) mobile_api_fail('Choose cash or M-Pesa', 422);
+    $db = ORM::get_db();
+    $fail = function ($m, $c) use ($db) {
+        if ($db->inTransaction()) $db->rollBack();
+        mobile_api_fail($m, $c);
+    };
+    $db->beginTransaction();
+    try {
+        $job = mobile_api_instpay_job($s, true);
+        if (in_array($job['status'], ['cancelled', 'completed'], true)) $fail('This installation is ' . $job['status'] . ', so payments cannot be added', 409);
+        if (in_array($job['pay_status'], ['paid', 'waived'], true)) $fail('Payment for this installation is already ' . $job['pay_status'], 409);
+        $payer = mb_substr(trim((string) mobile_api_in('payer')), 0, 120);
+        $note = mb_substr(trim((string) mobile_api_in('note')), 0, 255);
+        $by = $s['access']['name'];
+        $now = date('Y-m-d H:i:s');
+        if ($method === 'cash') {
+            $amount = round((float) mobile_api_in('amount'), 2);
+            if ($amount <= 0 || $amount > 1000000) $fail('Enter the amount received', 422);
+            $ref = 'CASH-' . date('ymdHis') . '-' . substr(bin2hex(random_bytes(2)), 0, 4);
+        } else {
+            $ref = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) mobile_api_in('ref')));
+            if (strlen($ref) < 8) $fail('Enter the M-Pesa transaction code', 422);
+            $tx = mobile_api_rows('SELECT TransAmount, FirstName FROM tbl_mpesa_transactions WHERE TransID = ? LIMIT 1', [$ref]);
+            if (!$tx) $fail('That M-Pesa code was not found. Payments appear here once Safaricom has sent them to your paybill.', 404);
+            if (mobile_api_rows('SELECT id FROM tbl_installation_payments WHERE ref = ?', [$ref]) || mobile_api_rows('SELECT id FROM tbl_c2b_manual WHERE trans_id = ?', [$ref])) {
+                $fail('That M-Pesa payment has already been used', 409);
+            }
+            $amount = (float) $tx[0]['TransAmount'];
+            if ($payer === '') $payer = (string) $tx[0]['FirstName'];
+            $db->prepare('INSERT INTO tbl_c2b_manual (trans_id, customer_id, amount, created_at) VALUES (?,?,?,?)')->execute([$ref, 0, $amount, $now]);
+        }
+        $db->prepare('INSERT INTO tbl_installation_payments (job_id, method, ref, amount, payer, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute([(int) $job['id'], $method, $ref, $amount, $payer, $note, $by, $now]);
+        $paid = (float) $job['amount_paid'] + $amount;
+        $due = (float) $job['amount_due'];
+        $status = ($due > 0 && $paid + 0.001 >= $due) ? 'paid' : 'awaiting';
+        $db->prepare('UPDATE tbl_installations SET amount_paid = ?, pay_status = ?, pay_requested_at = COALESCE(pay_requested_at, ?), updated_at = ? WHERE id = ?')
+            ->execute([$paid, $status, $now, $now, (int) $job['id']]);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        throw $e;
+    }
+    if ((int) $job['technician_id'] > 0 && (int) $job['technician_id'] !== (int) $s['user_id']) {
+        mobile_api_notify((int) $job['technician_id'], 'paid', $status === 'paid' ? 'Installation paid' : 'Part payment received',
+            $job['job_no'] . ' · ' . mobile_api_money($amount) . ($status === 'paid' ? ' - you can complete the job' : ' of ' . mobile_api_money($due)), 'install', (int) $job['id']);
+    }
+    mobile_api_out(['ok' => true, 'message' => ($status === 'paid' ? 'Paid in full' : 'Part payment saved') . ' (' . mobile_api_money($paid) . ' of ' . mobile_api_money($due) . ')', 'pay_status' => $status]);
+}
+
+function mobile_api_instpay_waive($s)
+{
+    mobile_api_instpay_need_manager($s);
+    $reason = trim((string) mobile_api_in('note'));
+    if (mb_strlen($reason) < 3) mobile_api_fail('Say why the payment is being skipped', 422);
+    $db = ORM::get_db();
+    $job = mobile_api_instpay_job($s);
+    if (in_array($job['status'], ['cancelled', 'completed'], true)) mobile_api_fail('This installation is ' . $job['status'], 409);
+    if ($job['pay_status'] === 'paid' || $job['pay_status'] === 'waived') mobile_api_fail('Payment is already ' . $job['pay_status'], 409);
+    $now = date('Y-m-d H:i:s');
+    $db->prepare('INSERT INTO tbl_installation_payments (job_id, method, ref, amount, payer, note, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)')
+        ->execute([(int) $job['id'], 'waived', 'WAIVE-' . date('ymdHis') . '-' . substr(bin2hex(random_bytes(2)), 0, 4), 0, '', 'Payment skipped: ' . mb_substr($reason, 0, 200), $s['access']['name'], $now]);
+    $db->prepare("UPDATE tbl_installations SET pay_status = 'waived', pay_requested_at = COALESCE(pay_requested_at, ?), updated_at = ? WHERE id = ?")->execute([$now, $now, (int) $job['id']]);
+    if ((int) $job['technician_id'] > 0 && (int) $job['technician_id'] !== (int) $s['user_id']) {
+        mobile_api_notify((int) $job['technician_id'], 'paid', 'Payment skipped', $job['job_no'] . ' - you can complete the job', 'install', (int) $job['id']);
+    }
+    mobile_api_out(['ok' => true, 'message' => 'Payment skipped for ' . $job['job_no'], 'pay_status' => 'waived']);
+}
+
+/** The website marks a job paid by itself when the M-Pesa payment arrives; tell the technician once. */
+function mobile_api_pay_scan($s)
+{
+    try {
+        $uid = (int) $s['user_id'];
+        if (!in_array('installations', $s['access']['modules'], true)) return;
+        $have = [];
+        foreach (mobile_api_rows("SELECT entity_id FROM tbl_mobile_notify WHERE user_id = ? AND kind = 'paid' AND entity = 'install'", [$uid]) as $r) {
+            $have[(int) $r['entity_id']] = true;
+        }
+        $rows = mobile_api_rows("SELECT id, job_no, amount_paid FROM tbl_installations WHERE technician_id = ? AND pay_status = 'paid' AND status NOT IN ('completed','cancelled') ORDER BY id DESC LIMIT 20", [$uid]);
+        foreach ($rows as $r) {
+            if (isset($have[(int) $r['id']])) continue;
+            mobile_api_notify($uid, 'paid', 'Installation paid', $r['job_no'] . ' · ' . mobile_api_money($r['amount_paid']) . ' - you can complete the job', 'install', (int) $r['id']);
+        }
+    } catch (Throwable $e) {
+    }
 }
