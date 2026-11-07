@@ -28,7 +28,8 @@ object Offline {
     val neverCache = setOf("login", "logout", "ping", "onu_reboot", "admin_recharge", "client_buy", "admin_user_save", "admin_user_delete",
         "access_save", "access_reset", "hr_employee_save", "hr_leave_decide", "store_request_decide", "store_receive", "inst_pay_record", "inst_pay_waive", "report_export", "photo_add", "photo_get", "notify_poll",
         "client_stk", "client_stk_status", "client_wifi_set", "client_wifi_get", "client_ticket_create", "client_ticket_comment_add",
-        "notice_save", "notice_end", "sessions_list", "session_revoke", "admin_user_logout") + queueable
+        "notice_save", "notice_end", "client_loyalty_apply", "client_loyalty_redeem", "loyalty_settings_save", "loyalty_adjust", "loyalty_referrer_set",
+        "activation_apply", "activation_preview", "sessions_list", "session_revoke", "admin_user_logout") + queueable
 
     var pending by mutableIntStateOf(0)
         private set

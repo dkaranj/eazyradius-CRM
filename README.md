@@ -119,3 +119,13 @@ The server plugin needs `system/uploads` to be writable by the web server for ph
 - Login is throttled after repeated wrong passwords (8 per username or 30 per IP in 15 minutes).
 
 Re-upload `server/system/plugin/mobile_api.php`; new tables are created automatically.
+
+## Loyalty points, referrals and manual activation
+
+**Rewards (customers)**: *Rewards and referrals* on Home. Customers earn points when they **renew on time** (default: 10 points per KSh 100 paid, still counts up to 1 day after the plan ended), redeem points into their wallet (default 100 points = KSh 10, minimum 100), and share a personal referral code. A referral pays the referrer (default 200 points) and the new customer (default 100 points) when the new customer makes their first payment of at least KSh 50. A code can be applied before the first payment, or set by staff.
+- Points are worked out from the website's own transactions table, so payments made on the website, by M-Pesa C2B or by staff all count. Only payments made after the feature is first used earn points. Installation fees, wallet top-ups and free manual activations never earn points, and each payment can only earn once.
+- **Rewards tab** for staff (module "Loyalty points and referrals"): totals, the rules (SuperAdmin/Admin can change them or pause the programme), find a customer, add or remove points with a reason, set a customer's referrer.
+
+**Manual activation (outage)**: **Activation** tab (module "Manual activation (outage)"). Choose one customer, or everyone whose plan ended in the last N hours; choose the days to add (1 to 30) and the speed (any enabled plan, shown with its speed, or keep each customer's own plan); a reason is required. You review the list, then confirm. Days are added from now or from the end of the current plan, whichever is later. It goes through the billing engine at zero price (so routers are updated and the transaction is recorded as "Manual Activation"), is listed in Recent activations and the audit log, and the customer is notified. Limit 500 customers per run.
+
+Re-upload `server/system/plugin/mobile_api.php`, tick **Loyalty points and referrals** and **Manual activation (outage)** on the Access screen for the people who should see them.

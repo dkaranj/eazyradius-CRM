@@ -42,6 +42,7 @@ fun ClientHome(reload: Int) {
     var homeBump by remember { mutableIntStateOf(0) }
     var showStk by remember { mutableStateOf(false) }
     var showWifi by remember { mutableStateOf(false) }
+    var showRewards by remember { mutableStateOf(false) }
     var phoneNo by remember { mutableStateOf("") }
     Remote(listOf(reload, homeBump), load = { Api.call("client_home") }) { j ->
         val c = j.getJSONObject("client")
@@ -57,6 +58,7 @@ fun ClientHome(reload: Int) {
                 Button(onClick = { showStk = true }, modifier = Modifier.weight(1f)) { Text("Top up (M-Pesa)") }
                 OutlinedButton(onClick = { showWifi = true }, modifier = Modifier.weight(1f)) { Text("My Wi-Fi") }
             }
+            OutlinedButton(onClick = { showRewards = true }, modifier = Modifier.fillMaxWidth()) { Text("Rewards and referrals") }
             StatCard("Wallet balance", c.optString("balance"), "info", Modifier.fillMaxWidth())
             if (plan != null) {
                 val active = plan.optBoolean("active")
@@ -83,6 +85,7 @@ fun ClientHome(reload: Int) {
     }
     if (showStk) StkDialog(phoneNo) { showStk = false; homeBump++ }
     if (showWifi) WifiDialog { showWifi = false }
+    if (showRewards) RewardsDialog { showRewards = false; homeBump++ }
 }
 
 @Composable

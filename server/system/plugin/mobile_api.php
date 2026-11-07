@@ -204,6 +204,46 @@ function mobile_api()
                 mobile_api_client_only($s);
                 mobile_api_client_wifi_set($s);
 
+            // ---- loyalty and referrals ----
+            case 'client_loyalty':
+                mobile_api_client_only($s);
+                mobile_api_client_loyalty($s);
+            case 'client_loyalty_apply':
+                mobile_api_client_only($s);
+                mobile_api_client_loyalty_apply($s);
+            case 'client_loyalty_redeem':
+                mobile_api_client_only($s);
+                mobile_api_client_loyalty_redeem($s);
+            case 'loyalty_overview':
+                mobile_api_mod($s, 'loyalty');
+                mobile_api_loyalty_overview();
+            case 'loyalty_customer':
+                mobile_api_mod($s, 'loyalty');
+                mobile_api_loyalty_customer();
+            case 'loyalty_settings_save':
+                mobile_api_mod($s, 'loyalty');
+                mobile_api_loyalty_settings_save($s);
+            case 'loyalty_adjust':
+                mobile_api_mod($s, 'loyalty');
+                mobile_api_loyalty_adjust($s);
+            case 'loyalty_referrer_set':
+                mobile_api_mod($s, 'loyalty');
+                mobile_api_loyalty_referrer_set($s);
+
+            // ---- manual activation during an outage ----
+            case 'activation_plans':
+                mobile_api_mod($s, 'activation');
+                mobile_api_activation_plans();
+            case 'activation_preview':
+                mobile_api_mod($s, 'activation');
+                mobile_api_activation_preview();
+            case 'activation_apply':
+                mobile_api_mod($s, 'activation');
+                mobile_api_activation_apply($s);
+            case 'activation_history':
+                mobile_api_mod($s, 'activation');
+                mobile_api_activation_history();
+
             // ---- notices (staff) ----
             case 'notice_list':
                 mobile_api_mod($s, 'notices');
@@ -460,6 +500,60 @@ function mobile_api_boot()
                 internal TINYINT NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL,
                 KEY idx_ticket (ticket_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_settings' => [
+            ['k', 'v'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_settings (
+                k VARCHAR(40) NOT NULL PRIMARY KEY,
+                v VARCHAR(200) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_loyalty' => [
+            ['customer_id', 'code', 'referred_by', 'referred_at', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_loyalty (
+                customer_id INT NOT NULL PRIMARY KEY,
+                code VARCHAR(12) NOT NULL,
+                referred_by INT NULL,
+                referred_at DATETIME NULL,
+                created_at DATETIME NOT NULL,
+                UNIQUE KEY uq_code (code),
+                KEY idx_ref (referred_by)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_points' => [
+            ['customer_id', 'points', 'kind', 'ref', 'note', 'created_by', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_points (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT NOT NULL,
+                points INT NOT NULL,
+                kind VARCHAR(20) NOT NULL,
+                ref VARCHAR(40) NOT NULL,
+                note VARCHAR(200) NULL,
+                created_by INT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                UNIQUE KEY uq_kind_ref (kind, ref),
+                KEY idx_cust (customer_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_manual_act' => [
+            ['batch', 'customer_id', 'username', 'plan_id', 'plan_name', 'days', 'prev_expiry', 'new_expiry', 'reason', 'by_id', 'by_name', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_manual_act (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                batch VARCHAR(24) NOT NULL,
+                customer_id INT NOT NULL,
+                username VARCHAR(40) NOT NULL,
+                plan_id INT NOT NULL DEFAULT 0,
+                plan_name VARCHAR(60) NULL,
+                days INT NOT NULL,
+                prev_expiry DATETIME NULL,
+                new_expiry DATETIME NULL,
+                reason VARCHAR(200) NULL,
+                by_id INT NOT NULL DEFAULT 0,
+                by_name VARCHAR(100) NULL,
+                created_at DATETIME NOT NULL,
+                KEY idx_batch (batch),
+                KEY idx_cust (customer_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_notices' => [
@@ -1902,6 +1996,7 @@ function mobile_api_catalog()
         ['key' => 'dashboard', 'label' => 'Business dashboard', 'group' => 'General'],
         ['key' => 'customers', 'label' => 'Customers and recharge', 'group' => 'General'],
         ['key' => 'payments', 'label' => 'Payments', 'group' => 'General'],
+        ['key' => 'loyalty', 'label' => 'Loyalty points and referrals', 'group' => 'General'],
         ['key' => 'reports', 'label' => 'Reports: revenue, expiring, team', 'group' => 'General'],
         ['key' => 'leads', 'label' => 'Leads', 'group' => 'Operations'],
         ['key' => 'installations', 'label' => 'Installations', 'group' => 'Operations'],
@@ -1916,6 +2011,7 @@ function mobile_api_catalog()
         ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
         ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
         ['key' => 'notices', 'label' => 'Outage notices to customers', 'group' => 'Network'],
+        ['key' => 'activation', 'label' => 'Manual activation (outage)', 'group' => 'Network'],
         ['key' => 'audit', 'label' => 'Audit log', 'group' => 'Admin'],
         ['key' => 'users', 'label' => 'Staff users', 'group' => 'Admin'],
     ];
@@ -2642,6 +2738,8 @@ function mobile_api_audited()
         'client_stk' => 'stk_push', 'client_ticket_create' => 'client_ticket', 'client_wifi_set' => 'wifi_change', 'notice_save' => 'notice', 'notice_end' => 'notice_end',
         'ticket_comment_add' => 'comment', 'client_ticket_comment_add' => 'comment', 'session_revoke' => 'session_revoke', 'admin_user_logout' => 'user_logout',
         'inst_pay_record' => 'install_payment', 'inst_pay_waive' => 'install_waive',
+        'client_loyalty_apply' => 'referral_apply', 'client_loyalty_redeem' => 'points_redeem', 'loyalty_settings_save' => 'loyalty_settings', 'loyalty_adjust' => 'points_adjust',
+        'loyalty_referrer_set' => 'referrer_set', 'activation_apply' => 'manual_activation',
     ];
 }
 
@@ -3218,6 +3316,9 @@ function mobile_api_notify_after($a, $data, $s)
 function mobile_api_notify_poll($s)
 {
     $now = time();
+    mobile_api_safe(function () {
+        mobile_api_loyalty_sync();
+    }, null);
     $items = [];
     $maxId = 0;
     if ($s['role'] !== 'staff') {
@@ -4717,4 +4818,433 @@ function mobile_api_mpesa_cb()
     }
     echo json_encode(['ResultCode' => 0, 'ResultDesc' => 'Accepted']);
     exit;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* loyalty points and referrals                                        */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_setting($k, $default = null)
+{
+    $r = mobile_api_safe(function () use ($k) {
+        return mobile_api_rows('SELECT v FROM tbl_mobile_settings WHERE k = ?', [$k]);
+    }, []);
+    return $r ? $r[0]['v'] : $default;
+}
+
+function mobile_api_setting_set($k, $v)
+{
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)')->execute([$k, (string) $v]);
+}
+
+/** What the admin chose, with sensible starting values. */
+function mobile_api_loy_cfg()
+{
+    $def = ['on' => 1, 'rate' => 10, 'grace' => 1, 'value' => 10, 'min' => 100, 'ref_referrer' => 200, 'ref_referee' => 100, 'ref_min' => 50];
+    $out = [];
+    foreach ($def as $k => $d) {
+        $out[$k] = (int) mobile_api_setting('loy_' . $k, $d);
+    }
+    return $out;
+}
+
+function mobile_api_loy_balance($cid)
+{
+    $r = mobile_api_rows('SELECT COALESCE(SUM(points),0) p FROM tbl_mobile_points WHERE customer_id = ?', [(int) $cid]);
+    return (int) $r[0]['p'];
+}
+
+/** Inserts a ledger line; the (kind, ref) pair is unique so the same payment can never earn twice. */
+function mobile_api_points_add($cid, $pts, $kind, $ref, $note, $by = 0)
+{
+    $st = ORM::get_db()->prepare('INSERT IGNORE INTO tbl_mobile_points (customer_id, points, kind, ref, note, created_by, created_at) VALUES (?,?,?,?,?,?,?)');
+    $st->execute([(int) $cid, (int) $pts, $kind, $ref, mb_substr((string) $note, 0, 200), (int) $by, date('Y-m-d H:i:s')]);
+    return $st->rowCount() > 0;
+}
+
+function mobile_api_loy_account($cid)
+{
+    $r = mobile_api_rows('SELECT * FROM tbl_mobile_loyalty WHERE customer_id = ?', [(int) $cid]);
+    if ($r) return $r[0];
+    $alpha = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    for ($i = 0; $i < 12; $i++) {
+        $code = '';
+        for ($j = 0; $j < 6; $j++) $code .= $alpha[random_int(0, strlen($alpha) - 1)];
+        $st = ORM::get_db()->prepare('INSERT IGNORE INTO tbl_mobile_loyalty (customer_id, code, created_at) VALUES (?,?,?)');
+        $st->execute([(int) $cid, $code, date('Y-m-d H:i:s')]);
+        $r = mobile_api_rows('SELECT * FROM tbl_mobile_loyalty WHERE customer_id = ?', [(int) $cid]);
+        if ($r) return $r[0];
+    }
+    mobile_api_fail('Could not create a referral code. Try again.', 500);
+}
+
+/**
+ * Reads new payments and awards points. Runs lazily (any poll, any loyalty screen), safe to run twice at once.
+ * A renewal counts when the plan is paid again before the old one ended, or within the grace days after.
+ */
+function mobile_api_loyalty_sync()
+{
+    $db = ORM::get_db();
+    if (!$db->query("SELECT GET_LOCK('mobile_api_loyalty', 0)")->fetchColumn()) return;
+    try {
+        $cfg = mobile_api_loy_cfg();
+        $cur = mobile_api_setting('loy_cursor');
+        if ($cur === null || !$cfg['on']) {
+            // start from now: past payments never earn points, and nothing piles up while the programme is off
+            $m = mobile_api_rows('SELECT COALESCE(MAX(id),0) m FROM tbl_transactions');
+            mobile_api_setting_set('loy_cursor', (int) $m[0]['m']);
+            return;
+        }
+        $rows = mobile_api_rows('SELECT * FROM tbl_transactions WHERE id > ? ORDER BY id LIMIT 200', [(int) $cur]);
+        foreach ($rows as $t) {
+            try {
+                mobile_api_loyalty_process($t, $cfg);
+            } catch (Throwable $e) {
+            }
+            $cur = (int) $t['id'];
+        }
+        mobile_api_setting_set('loy_cursor', $cur);
+    } finally {
+        $db->query("SELECT RELEASE_LOCK('mobile_api_loyalty')");
+    }
+}
+
+function mobile_api_loyalty_process($t, $cfg)
+{
+    $price = (float) $t['price'];
+    if ($t['type'] === 'Balance' || $price <= 0) return;
+    $c = null;
+    if ((int) $t['user_id'] > 0) $c = mobile_api_rows('SELECT id, fullname, username FROM tbl_customers WHERE id = ?', [(int) $t['user_id']]);
+    if (!$c) $c = mobile_api_rows('SELECT id, fullname, username FROM tbl_customers WHERE username = ?', [$t['username']]);
+    if (!$c) return;
+    $c = $c[0];
+    $cid = (int) $c['id'];
+    $dt = strtotime($t['recharged_on'] . ' ' . $t['recharged_time']);
+    $isInstall = stripos((string) $t['method'], 'Installation') === 0;
+    $isPeriod = !$isInstall && $t['expiration'] > $t['recharged_on'];
+
+    if ($isPeriod) {
+        $prev = mobile_api_rows("SELECT expiration, time FROM tbl_transactions WHERE username = ? AND id < ? AND type <> 'Balance' AND expiration > recharged_on ORDER BY id DESC LIMIT 1", [$t['username'], (int) $t['id']]);
+        if ($prev) {
+            $prevEnd = strtotime($prev[0]['expiration'] . ' ' . $prev[0]['time']);
+            if ($dt <= $prevEnd + $cfg['grace'] * 86400) {
+                $pts = (int) floor($price * $cfg['rate'] / 100);
+                if ($pts > 0 && mobile_api_points_add($cid, $pts, 'renew', 'tx' . $t['id'], 'On-time renewal: ' . $t['plan_name'])) {
+                    mobile_api_notify(-$cid, 'points', 'You earned ' . $pts . ' points', 'Thank you for renewing on time. Open Rewards to see your balance.', 'points', $cid);
+                }
+            }
+        }
+    }
+
+    // referral reward: the referred customer's first real payment
+    $acct = mobile_api_rows('SELECT referred_by, referred_at FROM tbl_mobile_loyalty WHERE customer_id = ? AND referred_by IS NOT NULL', [$cid]);
+    if ($acct && $price >= $cfg['ref_min'] && $dt >= strtotime($acct[0]['referred_at'])) {
+        $ref = (int) $acct[0]['referred_by'];
+        $name = $c['fullname'] ?: $c['username'];
+        if ($cfg['ref_referrer'] > 0 && mobile_api_points_add($ref, $cfg['ref_referrer'], 'ref_referrer', 'c' . $cid, 'Referral: ' . $name . ' joined')) {
+            mobile_api_notify(-$ref, 'points', 'Referral reward: ' . $cfg['ref_referrer'] . ' points', 'Someone you referred has paid. Thank you!', 'points', $ref);
+        }
+        if ($cfg['ref_referee'] > 0 && mobile_api_points_add($cid, $cfg['ref_referee'], 'ref_referee', 'c' . $cid, 'Welcome bonus for joining by referral')) {
+            mobile_api_notify(-$cid, 'points', 'Welcome bonus: ' . $cfg['ref_referee'] . ' points', 'You joined through a referral.', 'points', $cid);
+        }
+    }
+}
+
+function mobile_api_mask_name($n)
+{
+    $p = preg_split('/\s+/', trim((string) $n));
+    return $p[0] . (isset($p[1]) ? ' ' . mb_substr($p[1], 0, 1) . '.' : '');
+}
+
+function mobile_api_loy_ledger($cid, $limit = 25)
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT points, kind, note, created_at FROM tbl_mobile_points WHERE customer_id = ? ORDER BY id DESC LIMIT ' . (int) $limit, [(int) $cid]) as $r) {
+        $out[] = ['points' => (int) $r['points'], 'kind' => $r['kind'], 'note' => (string) $r['note'], 'time' => $r['created_at']];
+    }
+    return $out;
+}
+
+function mobile_api_loy_summary($cid)
+{
+    $cfg = mobile_api_loy_cfg();
+    $acct = mobile_api_loy_account($cid);
+    $bal = mobile_api_loy_balance($cid);
+    $refs = [];
+    foreach (mobile_api_rows('SELECT l.customer_id, c.fullname, c.username, l.referred_at,
+            (SELECT COUNT(*) FROM tbl_mobile_points p WHERE p.kind = "ref_referrer" AND p.ref = CONCAT("c", l.customer_id)) done
+            FROM tbl_mobile_loyalty l JOIN tbl_customers c ON c.id = l.customer_id WHERE l.referred_by = ? ORDER BY l.referred_at DESC LIMIT 30', [(int) $cid]) as $r) {
+        $refs[] = ['name' => mobile_api_mask_name($r['fullname'] ?: $r['username']), 'status' => (int) $r['done'] > 0 ? 'rewarded' : 'waiting for first payment', 'time' => $r['referred_at']];
+    }
+    $by = null;
+    if ($acct['referred_by']) {
+        $b = mobile_api_rows('SELECT fullname, username FROM tbl_customers WHERE id = ?', [(int) $acct['referred_by']]);
+        $by = $b ? mobile_api_mask_name($b[0]['fullname'] ?: $b[0]['username']) : null;
+    }
+    $cust = mobile_api_rows('SELECT username FROM tbl_customers WHERE id = ?', [(int) $cid]);
+    $paid = mobile_api_rows("SELECT COUNT(*) n FROM tbl_transactions WHERE username = ? AND type <> 'Balance' AND CAST(price AS DECIMAL(12,2)) > 0", [$cust ? $cust[0]['username'] : '']);
+    $rech = mobile_api_active_recharge($cid);
+    $renewBy = $rech ? date('Y-m-d H:i', strtotime($rech['expiration'] . ' ' . $rech['time']) + $cfg['grace'] * 86400) : null;
+    return [
+        'on' => (bool) $cfg['on'], 'points' => $bal, 'value' => mobile_api_money($bal * $cfg['value'] / 100), 'value_raw' => round($bal * $cfg['value'] / 100, 2),
+        'code' => $acct['code'], 'referred_by' => $by, 'can_apply' => !$acct['referred_by'] && (int) $paid[0]['n'] === 0,
+        'referrals' => $refs, 'ledger' => mobile_api_loy_ledger($cid), 'renew_by' => $renewBy,
+        'rules' => ['rate' => $cfg['rate'], 'grace' => $cfg['grace'], 'value' => $cfg['value'], 'min' => $cfg['min'],
+            'ref_referrer' => $cfg['ref_referrer'], 'ref_referee' => $cfg['ref_referee'], 'ref_min' => $cfg['ref_min']],
+    ];
+}
+
+function mobile_api_client_loyalty($s)
+{
+    mobile_api_loyalty_sync();
+    mobile_api_out(['ok' => true, 'loyalty' => mobile_api_loy_summary((int) $s['user_id'])]);
+}
+
+/** Shared by the customer (own code) and staff (any customer). */
+function mobile_api_loy_set_referrer($cid, $code)
+{
+    $code = strtoupper(trim((string) $code));
+    if ($code === '') mobile_api_fail('Enter the referral code', 422);
+    $mine = mobile_api_loy_account($cid);
+    if ($mine['referred_by']) mobile_api_fail('A referral code is already applied', 409);
+    if (mobile_api_rows('SELECT 1 FROM tbl_mobile_points WHERE kind = "ref_referee" AND ref = ?', ['c' . (int) $cid])) mobile_api_fail('A referral reward was already given', 409);
+    $r = mobile_api_rows('SELECT customer_id, referred_by FROM tbl_mobile_loyalty WHERE code = ?', [$code]);
+    if (!$r) mobile_api_fail('That code was not found. Check it and try again.', 404);
+    $ref = (int) $r[0]['customer_id'];
+    if ($ref === (int) $cid) mobile_api_fail('You cannot use your own code', 422);
+    if ((int) $r[0]['referred_by'] === (int) $cid) mobile_api_fail('That person was referred by you, so the code cannot be used', 422);
+    ORM::get_db()->prepare('UPDATE tbl_mobile_loyalty SET referred_by = ?, referred_at = ? WHERE customer_id = ? AND referred_by IS NULL')->execute([$ref, date('Y-m-d H:i:s'), (int) $cid]);
+    $n = mobile_api_rows('SELECT fullname, username FROM tbl_customers WHERE id = ?', [$ref]);
+    return $n ? mobile_api_mask_name($n[0]['fullname'] ?: $n[0]['username']) : '';
+}
+
+function mobile_api_client_loyalty_apply($s)
+{
+    $paid = mobile_api_rows("SELECT COUNT(*) n FROM tbl_transactions t JOIN tbl_customers c ON c.username = t.username WHERE c.id = ? AND t.type <> 'Balance' AND CAST(t.price AS DECIMAL(12,2)) > 0", [(int) $s['user_id']]);
+    if ((int) $paid[0]['n'] > 0) mobile_api_fail('Referral codes can only be added before your first payment. Ask support if you need help.', 422);
+    $who = mobile_api_loy_set_referrer((int) $s['user_id'], mobile_api_in('code'));
+    mobile_api_out(['ok' => true, 'message' => 'Code applied. Referred by ' . rtrim($who, '.') . '. Your rewards arrive after your first payment.']);
+}
+
+function mobile_api_client_loyalty_redeem($s)
+{
+    $cfg = mobile_api_loy_cfg();
+    if (!$cfg['on']) mobile_api_fail('Rewards are not running right now', 422);
+    $pts = (int) mobile_api_in('points');
+    if ($pts < $cfg['min']) mobile_api_fail('The minimum to redeem is ' . $cfg['min'] . ' points', 422);
+    $cid = (int) $s['user_id'];
+    mobile_api_loy_account($cid);
+    $db = ORM::get_db();
+    $db->beginTransaction();
+    try {
+        $db->prepare('SELECT customer_id FROM tbl_mobile_loyalty WHERE customer_id = ? FOR UPDATE')->execute([$cid]);
+        if (mobile_api_loy_balance($cid) < $pts) {
+            $db->rollBack();
+            mobile_api_fail('You do not have that many points', 422);
+        }
+        $kes = round($pts * $cfg['value'] / 100, 2);
+        mobile_api_points_add($cid, -$pts, 'redeem', 'rd' . uniqid('', true), 'Redeemed for ' . mobile_api_money($kes) . ' wallet credit');
+        $db->prepare('UPDATE tbl_customers SET balance = balance + ? WHERE id = ?')->execute([$kes, $cid]);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        mobile_api_fail('Could not redeem. Try again.', 500);
+    }
+    mobile_api_out(['ok' => true, 'message' => mobile_api_money($kes) . ' added to your wallet. Use it to buy a plan.']);
+}
+
+function mobile_api_loyalty_overview()
+{
+    mobile_api_loyalty_sync();
+    $cfg = mobile_api_loy_cfg();
+    $tot = mobile_api_rows('SELECT COALESCE(SUM(CASE WHEN points>0 THEN points END),0) issued, COALESCE(-SUM(CASE WHEN points<0 THEN points END),0) redeemed, COALESCE(SUM(points),0) outstanding FROM tbl_mobile_points');
+    $refs = mobile_api_rows('SELECT COUNT(*) n FROM tbl_mobile_points WHERE kind = "ref_referrer"');
+    $top = [];
+    foreach (mobile_api_rows('SELECT c.id, c.fullname, c.username, SUM(p.points) pts FROM tbl_mobile_points p JOIN tbl_customers c ON c.id = p.customer_id GROUP BY c.id, c.fullname, c.username HAVING pts > 0 ORDER BY pts DESC LIMIT 10') as $r) {
+        $top[] = ['id' => (int) $r['id'], 'name' => $r['fullname'] ?: $r['username'], 'username' => $r['username'], 'points' => (int) $r['pts']];
+    }
+    $recent = [];
+    foreach (mobile_api_rows('SELECT p.points, p.kind, p.note, p.created_at, c.fullname, c.username FROM tbl_mobile_points p JOIN tbl_customers c ON c.id = p.customer_id ORDER BY p.id DESC LIMIT 20') as $r) {
+        $recent[] = ['name' => $r['fullname'] ?: $r['username'], 'points' => (int) $r['points'], 'kind' => $r['kind'], 'note' => (string) $r['note'], 'time' => $r['created_at']];
+    }
+    mobile_api_out(['ok' => true, 'settings' => $cfg, 'totals' => ['issued' => (int) $tot[0]['issued'], 'redeemed' => (int) $tot[0]['redeemed'], 'outstanding' => (int) $tot[0]['outstanding'],
+        'value_outstanding' => mobile_api_money($tot[0]['outstanding'] * $cfg['value'] / 100), 'referrals_rewarded' => (int) $refs[0]['n']], 'top' => $top, 'recent' => $recent]);
+}
+
+function mobile_api_loyalty_settings_save($s)
+{
+    mobile_api_need_manager(mobile_api_actor($s));
+    $rules = ['on' => [0, 1], 'rate' => [0, 1000], 'grace' => [0, 30], 'value' => [0, 10000], 'min' => [1, 1000000], 'ref_referrer' => [0, 100000], 'ref_referee' => [0, 100000], 'ref_min' => [0, 1000000]];
+    foreach ($rules as $k => $range) {
+        $v = mobile_api_in($k);
+        if ($v === '' || $v === null) continue;
+        if (!is_numeric($v) || (int) $v < $range[0] || (int) $v > $range[1]) mobile_api_fail('Invalid value for ' . $k, 422);
+        mobile_api_setting_set('loy_' . $k, (int) $v);
+    }
+    mobile_api_out(['ok' => true, 'message' => 'Rewards settings saved']);
+}
+
+function mobile_api_loyalty_customer()
+{
+    mobile_api_loyalty_sync();
+    $c = ORM::for_table('tbl_customers')->find_one((int) mobile_api_in('customer_id'));
+    if (!$c) mobile_api_fail('Customer not found', 404);
+    mobile_api_out(['ok' => true, 'customer' => ['id' => (int) $c['id'], 'name' => $c['fullname'] ?: $c['username'], 'username' => $c['username']], 'loyalty' => mobile_api_loy_summary((int) $c['id'])]);
+}
+
+function mobile_api_loyalty_adjust($s)
+{
+    mobile_api_need_manager(mobile_api_actor($s));
+    $cid = (int) mobile_api_in('customer_id');
+    $pts = (int) mobile_api_in('points');
+    $note = trim((string) mobile_api_in('note'));
+    if (!ORM::for_table('tbl_customers')->find_one($cid)) mobile_api_fail('Customer not found', 404);
+    if ($pts === 0 || abs($pts) > 100000) mobile_api_fail('Enter points to add or remove (up to 100,000)', 422);
+    if (mb_strlen($note) < 3) mobile_api_fail('Write a short reason', 422);
+    if ($pts < 0 && mobile_api_loy_balance($cid) + $pts < 0) mobile_api_fail('That is more than the customer has', 422);
+    mobile_api_points_add($cid, $pts, 'adjust', 'adj' . uniqid('', true), $note, (int) $s['user_id']);
+    mobile_api_notify(-$cid, 'points', ($pts > 0 ? 'Points added: ' : 'Points removed: ') . abs($pts), $note, 'points', $cid);
+    mobile_api_out(['ok' => true, 'message' => 'Points updated']);
+}
+
+function mobile_api_loyalty_referrer_set($s)
+{
+    $cid = (int) mobile_api_in('customer_id');
+    if (!ORM::for_table('tbl_customers')->find_one($cid)) mobile_api_fail('Customer not found', 404);
+    $who = mobile_api_loy_set_referrer($cid, mobile_api_in('code'));
+    mobile_api_out(['ok' => true, 'message' => 'Referred by ' . rtrim($who, '.') . '. The reward is paid on the first payment.']);
+}
+
+/* ------------------------------------------------------------------ */
+/* manual activation (a system outage: add days at a chosen speed)      */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_speed_label($row)
+{
+    if (empty($row['rate_down'])) return '';
+    $d = $row['rate_down'] . ' ' . $row['rate_down_unit'];
+    $u = $row['rate_up'] . ' ' . $row['rate_up_unit'];
+    return $d === $u ? $d : $d . ' down / ' . $u . ' up';
+}
+
+function mobile_api_activation_plans()
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT p.id, p.name_plan, p.type, p.validity, p.validity_unit, b.rate_down, b.rate_down_unit, b.rate_up, b.rate_up_unit
+            FROM tbl_plans p LEFT JOIN tbl_bandwidth b ON b.id = p.id_bw WHERE p.enabled = 1 ORDER BY b.rate_down_unit DESC, b.rate_down, p.name_plan') as $p) {
+        $out[] = ['id' => (int) $p['id'], 'name' => $p['name_plan'], 'type' => $p['type'], 'speed' => mobile_api_speed_label($p), 'validity' => $p['validity'] . ' ' . $p['validity_unit']];
+    }
+    mobile_api_out(['ok' => true, 'plans' => $out]);
+}
+
+/** Who a request would touch: one customer, or everyone whose plan ran out in the last N hours. */
+function mobile_api_activation_targets()
+{
+    $mode = (string) mobile_api_in('mode');
+    $sql = 'SELECT r.id rid, r.customer_id, r.username, r.plan_id, r.namebp, r.expiration, r.time, r.routers, r.type, r.status, c.fullname
+        FROM tbl_user_recharges r JOIN tbl_customers c ON c.id = r.customer_id WHERE c.status = "Active"';
+    if ($mode === 'customer') {
+        $cid = (int) mobile_api_in('customer_id');
+        if (!ORM::for_table('tbl_customers')->find_one($cid)) mobile_api_fail('Customer not found', 404);
+        $rows = mobile_api_rows($sql . ' AND r.customer_id = ? ORDER BY r.id DESC LIMIT 1', [$cid]);
+        return ['customer', $rows, $cid];
+    }
+    if ($mode === 'expired') {
+        $h = (int) mobile_api_in('hours');
+        if ($h < 1 || $h > 168) mobile_api_fail('Choose between 1 and 168 hours', 422);
+        $now = date('Y-m-d H:i:s');
+        $from = date('Y-m-d H:i:s', time() - $h * 3600);
+        $rows = mobile_api_rows($sql . ' AND CONCAT(r.expiration, " ", r.time) <= ? AND CONCAT(r.expiration, " ", r.time) >= ? ORDER BY r.expiration LIMIT 501', [$now, $from]);
+        return ['expired', $rows, 0];
+    }
+    mobile_api_fail('Choose who to activate', 422);
+}
+
+function mobile_api_activation_preview()
+{
+    list($mode, $rows, $cid) = mobile_api_activation_targets();
+    $sample = [];
+    foreach (array_slice($rows, 0, 8) as $r) {
+        $sample[] = ['name' => $r['fullname'] ?: $r['username'], 'plan' => $r['namebp'], 'expires' => $r['expiration'] . ' ' . $r['time']];
+    }
+    mobile_api_out(['ok' => true, 'count' => count($rows), 'too_many' => count($rows) > 500, 'sample' => $sample]);
+}
+
+function mobile_api_activation_apply($s)
+{
+    @set_time_limit(300);
+    list($mode, $rows, $cid) = mobile_api_activation_targets();
+    $days = (int) mobile_api_in('days');
+    if ($days < 1 || $days > 30) mobile_api_fail('Choose between 1 and 30 days', 422);
+    $reason = trim((string) mobile_api_in('reason'));
+    if (mb_strlen($reason) < 3) mobile_api_fail('Write the reason (for example: outage on 7 Nov)', 422);
+    if (count($rows) > 500) mobile_api_fail('That is more than 500 customers. Choose a shorter period.', 422);
+    if ($mode === 'expired' && (int) mobile_api_in('expect', -1) !== count($rows)) mobile_api_fail('The list changed (' . count($rows) . ' customers now). Check it and confirm again.', 409);
+    $plan = null;
+    $pid = (int) mobile_api_in('plan_id', 0);
+    if ($pid > 0) {
+        $plan = ORM::for_table('tbl_plans')->where('enabled', 1)->find_one($pid);
+        if (!$plan) mobile_api_fail('Plan not found', 404);
+    }
+    if (!class_exists('Package') || !method_exists('Package', 'rechargeUser')) mobile_api_fail('Activation is not available in this PHPNuxBill version', 500);
+    $by = $s['access']['name'];
+    $batch = date('ymdHis') . random_int(10, 99);
+    if ($mode === 'customer' && !$rows) {
+        // a customer with no plan yet: needs a chosen plan
+        if (!$plan) mobile_api_fail('This customer has no plan. Choose a speed.', 422);
+        $c = ORM::for_table('tbl_customers')->find_one($cid);
+        $rows = [['rid' => 0, 'customer_id' => $cid, 'username' => $c['username'], 'plan_id' => 0, 'namebp' => '', 'expiration' => null, 'time' => null, 'routers' => '', 'type' => '', 'status' => 'off', 'fullname' => $c['fullname']]];
+    }
+    $done = 0;
+    $failed = [];
+    foreach ($rows as $r) {
+        try {
+            mobile_api_activate_one($r, $plan, $days, $by, (int) $s['user_id'], $reason, $batch);
+            $done++;
+        } catch (Throwable $e) {
+            $failed[] = $r['username'];
+        }
+    }
+    $msg = $done . ' customer(s) activated for ' . $days . ' day(s)';
+    if ($failed) $msg .= '. Could not activate: ' . implode(', ', array_slice($failed, 0, 5)) . (count($failed) > 5 ? '...' : '');
+    mobile_api_out(['ok' => true, 'activated' => $done, 'failed' => count($failed), 'batch' => $batch, 'message' => $msg]);
+}
+
+function mobile_api_activate_one($r, $plan, $days, $by, $byId, $reason, $batch)
+{
+    $p = $plan;
+    if (!$p) $p = ORM::for_table('tbl_plans')->find_one((int) $r['plan_id']);
+    if (!$p) throw new Exception('no plan');
+    $prevEnd = $r['expiration'] ? strtotime($r['expiration'] . ' ' . $r['time']) : 0;
+    $base = max(time(), $prevEnd);
+    $newEnd = $base + $days * 86400;
+    $GLOBALS['zero'] = 1; // the billing engine records a free (zero price) activation
+    try {
+        Package::rechargeUser((int) $r['customer_id'], $p['routers'], $p['id'], $by, 'Manual Activation', 'Outage: ' . $reason);
+    } finally {
+        unset($GLOBALS['zero']);
+    }
+    $db = ORM::get_db();
+    $db->prepare('UPDATE tbl_user_recharges SET expiration = ?, time = ?, status = "on" WHERE customer_id = ? AND routers = ? AND type = ?')
+        ->execute([date('Y-m-d', $newEnd), date('H:i:s', $newEnd), (int) $r['customer_id'], $p['routers'], $p['type']]);
+    $db->prepare('UPDATE tbl_transactions SET expiration = ?, time = ?, price = "0", admin_id = ? WHERE username = ? AND method LIKE "%Manual Activation%" ORDER BY id DESC LIMIT 1')
+        ->execute([date('Y-m-d', $newEnd), date('H:i:s', $newEnd), $byId, $r['username']]);
+    $db->prepare('INSERT INTO tbl_mobile_manual_act (batch, customer_id, username, plan_id, plan_name, days, prev_expiry, new_expiry, reason, by_id, by_name, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+        ->execute([$batch, (int) $r['customer_id'], $r['username'], (int) $p['id'], $p['name_plan'], $days, $prevEnd ? date('Y-m-d H:i:s', $prevEnd) : null,
+            date('Y-m-d H:i:s', $newEnd), mb_substr($reason, 0, 200), $byId, $by, date('Y-m-d H:i:s')]);
+    mobile_api_notify(-(int) $r['customer_id'], 'activation', 'Your internet is active', 'We added ' . $days . ' day(s) to your plan. ' . $reason, 'activation', (int) $r['customer_id']);
+}
+
+function mobile_api_activation_history()
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT batch, COUNT(*) n, MAX(days) days, MAX(plan_name) plan, MAX(reason) reason, MAX(by_name) by_name, MAX(created_at) at FROM tbl_mobile_manual_act GROUP BY batch ORDER BY MAX(id) DESC LIMIT 40') as $r) {
+        $names = [];
+        if ((int) $r['n'] <= 3) {
+            foreach (mobile_api_rows('SELECT username FROM tbl_mobile_manual_act WHERE batch = ?', [$r['batch']]) as $u) $names[] = $u['username'];
+        }
+        $out[] = ['batch' => $r['batch'], 'count' => (int) $r['n'], 'days' => (int) $r['days'], 'plan' => $r['plan'], 'reason' => $r['reason'], 'by' => $r['by_name'], 'time' => $r['at'], 'who' => implode(', ', $names)];
+    }
+    mobile_api_out(['ok' => true, 'history' => $out]);
 }
