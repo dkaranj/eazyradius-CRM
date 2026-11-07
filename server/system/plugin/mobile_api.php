@@ -244,6 +244,26 @@ function mobile_api()
                 mobile_api_mod($s, 'activation');
                 mobile_api_activation_history();
 
+            // ---- fibre and splitter map ----
+            case 'netmap_data':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_data();
+            case 'netmap_trace':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_trace();
+            case 'netmap_unplaced':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_unplaced();
+            case 'netmap_asset_save':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_asset_save($s);
+            case 'netmap_asset_delete':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_asset_delete($s);
+            case 'netmap_onu_place':
+                mobile_api_mod($s, 'netmap');
+                mobile_api_netmap_onu_place($s);
+
             // ---- notices (staff) ----
             case 'notice_list':
                 mobile_api_mod($s, 'notices');
@@ -554,6 +574,32 @@ function mobile_api_boot()
                 created_at DATETIME NOT NULL,
                 KEY idx_batch (batch),
                 KEY idx_cust (customer_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_net' => [
+            ['asset_id', 'parent_id', 'cable', 'cores', 'length_m', 'split', 'port', 'updated_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_net (
+                asset_id INT NOT NULL PRIMARY KEY,
+                parent_id INT NULL,
+                cable VARCHAR(80) NULL,
+                cores VARCHAR(20) NULL,
+                length_m INT NULL,
+                split VARCHAR(12) NULL,
+                port VARCHAR(20) NULL,
+                updated_at DATETIME NOT NULL,
+                KEY idx_parent (parent_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_onu_feed' => [
+            ['device_id', 'asset_id', 'port', 'lat', 'lng', 'updated_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_onu_feed (
+                device_id VARCHAR(190) NOT NULL PRIMARY KEY,
+                asset_id INT NOT NULL,
+                port VARCHAR(20) NULL,
+                lat DECIMAL(10,7) NULL,
+                lng DECIMAL(10,7) NULL,
+                updated_at DATETIME NOT NULL,
+                KEY idx_asset (asset_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_notices' => [
@@ -2009,6 +2055,7 @@ function mobile_api_catalog()
         ['key' => 'hr_leave', 'label' => 'Leave approvals', 'group' => 'HR'],
         ['key' => 'hr_payroll', 'label' => 'Payroll (view only)', 'group' => 'HR'],
         ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
+        ['key' => 'netmap', 'label' => 'Fibre and splitter map', 'group' => 'Network'],
         ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
         ['key' => 'notices', 'label' => 'Outage notices to customers', 'group' => 'Network'],
         ['key' => 'activation', 'label' => 'Manual activation (outage)', 'group' => 'Network'],
@@ -2740,6 +2787,7 @@ function mobile_api_audited()
         'inst_pay_record' => 'install_payment', 'inst_pay_waive' => 'install_waive',
         'client_loyalty_apply' => 'referral_apply', 'client_loyalty_redeem' => 'points_redeem', 'loyalty_settings_save' => 'loyalty_settings', 'loyalty_adjust' => 'points_adjust',
         'loyalty_referrer_set' => 'referrer_set', 'activation_apply' => 'manual_activation',
+        'netmap_asset_save' => 'netmap_save', 'netmap_asset_delete' => 'netmap_delete', 'netmap_onu_place' => 'netmap_onu',
     ];
 }
 
@@ -3413,7 +3461,7 @@ function mobile_api_customer_360($s)
                 $row = ['id' => $id, 'model' => '', 'serial' => '', 'online' => null, 'last_inform' => '', 'rx' => isset($rx[$id]) ? mobile_api_onu_rx($rx[$id]) : null];
             }
             $row['rx_state'] = mobile_api_onu_state($row['rx']);
-            $onus[] = ['id' => $row['id'], 'model' => $row['model'], 'serial' => $row['serial'], 'online' => $row['online'], 'last_inform' => $row['last_inform'], 'rx' => $row['rx'], 'rx_state' => $row['rx_state']];
+            $onus[] = ['id' => $row['id'], 'model' => $row['model'], 'serial' => $row['serial'], 'online' => $row['online'], 'last_inform' => $row['last_inform'], 'rx' => $row['rx'], 'rx_state' => $row['rx_state'], 'feed' => mobile_api_netmap_feed_text($row['id'])];
         }
     } catch (Throwable $e) {
     }
@@ -5247,4 +5295,349 @@ function mobile_api_activation_history()
         $out[] = ['batch' => $r['batch'], 'count' => (int) $r['n'], 'days' => (int) $r['days'], 'plan' => $r['plan'], 'reason' => $r['reason'], 'by' => $r['by_name'], 'time' => $r['at'], 'who' => implode(', ', $names)];
     }
     mobile_api_out(['ok' => true, 'history' => $out]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* fibre and splitter map                                              */
+/* Nodes are the website FTTH Mapping plugin's tbl_ftth_assets (OLT, ODC, ODP, pole). */
+/* This adds which node feeds which (and by which cable), and which ONU sits on which node. */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_netmap_types()
+{
+    return ['olt', 'odc', 'odp', 'pole', 'router'];
+}
+
+function mobile_api_netmap_latlng($str)
+{
+    if (!preg_match('/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/', (string) $str, $m)) return [null, null];
+    $la = (float) $m[1];
+    $ln = (float) $m[2];
+    if ($la < -90 || $la > 90 || $ln < -180 || $ln > 180) return [null, null];
+    return [$la, $ln];
+}
+
+/** All nodes with their feeder links, all placed ONUs with live status, and the health of every branch. */
+function mobile_api_netmap_build()
+{
+    $assets = [];
+    foreach (mobile_api_rows('SELECT a.id, a.type, a.name, a.coordinates, a.status, a.note, n.parent_id, n.cable, n.cores, n.length_m, n.split, n.port
+            FROM tbl_ftth_assets a LEFT JOIN tbl_mobile_net n ON n.asset_id = a.id ORDER BY a.id') as $a) {
+        list($la, $ln) = mobile_api_netmap_latlng($a['coordinates']);
+        $assets[(int) $a['id']] = [
+            'id' => (int) $a['id'], 'type' => $a['type'], 'name' => $a['name'], 'lat' => $la, 'lng' => $ln, 'flag' => $a['status'] === 'problem', 'note' => (string) $a['note'],
+            'parent_id' => $a['parent_id'] === null ? 0 : (int) $a['parent_id'], 'cable' => (string) $a['cable'], 'cores' => (string) $a['cores'],
+            'length_m' => $a['length_m'] === null ? null : (int) $a['length_m'], 'split' => (string) $a['split'], 'port' => (string) $a['port'],
+            'own' => 0, 'total' => 0, 'on' => 0, 'off' => 0, 'weak' => 0, 'health' => 'empty',
+        ];
+    }
+    foreach ($assets as $id => &$a) {
+        if ($a['parent_id'] && !isset($assets[$a['parent_id']])) $a['parent_id'] = 0;
+    }
+    unset($a);
+
+    $feeds = [];
+    foreach (mobile_api_rows('SELECT device_id, asset_id, port, lat, lng FROM tbl_mobile_onu_feed') as $f) $feeds[$f['device_id']] = $f;
+    list($links, $rx) = mobile_api_onu_maps();
+    $custPos = [];
+    $live = null;
+    $docs = null;
+    if ($feeds) {
+        $docs = mobile_api_nbi('/devices?projection=' . rawurlencode('_id,_lastInform,_deviceId,VirtualParameters'));
+        $live = is_array($docs);
+    }
+    $byId = [];
+    if ($live) foreach ($docs as $d) if (isset($d['_id'])) $byId[(string) $d['_id']] = $d;
+    $onus = [];
+    foreach ($feeds as $id => $f) {
+        if (!isset($assets[(int) $f['asset_id']])) continue;
+        $row = isset($byId[$id]) ? mobile_api_onu_row($byId[$id], $links, $rx)
+            : ['id' => $id, 'model' => '', 'serial' => '', 'online' => null, 'last_inform' => '', 'rx' => isset($rx[$id]) ? mobile_api_onu_rx($rx[$id]) : null, 'customer' => isset($links[$id]) ? $links[$id] : null];
+        $row['rx_state'] = mobile_api_onu_state($row['rx']);
+        if (!$live) $row['online'] = null;
+        $lat = $f['lat'] === null ? null : (float) $f['lat'];
+        $lng = $f['lng'] === null ? null : (float) $f['lng'];
+        if ($lat === null && $row['customer']) {
+            $c = mobile_api_rows('SELECT coordinates FROM tbl_customers WHERE id = ?', [(int) $row['customer']['id']]);
+            if ($c) list($lat, $lng) = mobile_api_netmap_latlng($c[0]['coordinates']);
+        }
+        $onus[] = ['id' => $id, 'asset_id' => (int) $f['asset_id'], 'port' => (string) $f['port'], 'name' => $row['customer'] ? $row['customer']['name'] : ($row['serial'] ?: $id),
+            'customer_id' => $row['customer'] ? $row['customer']['id'] : 0, 'phone' => $row['customer'] ? $row['customer']['phone'] : '',
+            'online' => $row['online'], 'rx' => $row['rx'], 'rx_state' => $row['rx_state'], 'lat' => $lat, 'lng' => $lng, 'last_inform' => $row['last_inform']];
+    }
+    // children and roll-up of ONU counts through every branch
+    $kids = [];
+    foreach ($assets as $id => $a) $kids[$a['parent_id']][] = $id;
+    foreach ($onus as $o) {
+        $a = &$assets[$o['asset_id']];
+        $a['own']++;
+        $a['total']++;
+        if ($o['online'] === true) $a['on']++;
+        elseif ($o['online'] === false) $a['off']++;
+        if ($o['online'] !== false && in_array($o['rx_state'], ['warn', 'over'], true)) $a['weak']++;
+        unset($a);
+    }
+    $seen = [];
+    $roll = function ($id) use (&$roll, &$assets, &$kids, &$seen) {
+        if (isset($seen[$id])) return;
+        $seen[$id] = true;
+        if (!empty($kids[$id])) foreach ($kids[$id] as $k) {
+            $roll($k);
+            foreach (['total', 'on', 'off', 'weak'] as $f) $assets[$id][$f] += $assets[$k][$f];
+        }
+    };
+    foreach ($assets as $id => $a) if (!$a['parent_id']) $roll($id);
+    foreach ($assets as $id => $a) if (!isset($seen[$id])) $roll($id);
+    foreach ($assets as $id => &$a) {
+        $known = $a['on'] + $a['off'];
+        if ($a['total'] === 0) $a['health'] = 'empty';
+        elseif ($known === 0) $a['health'] = 'unknown';
+        elseif ($a['off'] === $known) $a['health'] = 'dark';
+        elseif ($a['off'] > 0) $a['health'] = 'partial';
+        elseif ($a['weak'] >= 2 || $a['weak'] === $a['on']) $a['health'] = 'weak';
+        else $a['health'] = 'ok';
+    }
+    unset($a);
+    return [$assets, $onus, $kids, $live];
+}
+
+function mobile_api_netmap_subtree_onus($id, $kids, $onus)
+{
+    $ids = [];
+    $stack = [$id];
+    while ($stack) {
+        $x = array_pop($stack);
+        if (isset($ids[$x])) continue;
+        $ids[$x] = true;
+        if (!empty($kids[$x])) foreach ($kids[$x] as $k) $stack[] = $k;
+    }
+    return array_values(array_filter($onus, function ($o) use ($ids) { return isset($ids[$o['asset_id']]); }));
+}
+
+/** Where the fault most likely is: the highest branch that is completely dark while its feeder still has working ONUs. */
+function mobile_api_netmap_faults($assets, $onus, $kids)
+{
+    $out = [];
+    foreach ($assets as $id => $a) {
+        $parent = $a['parent_id'] ? $assets[$a['parent_id']] : null;
+        $label = strtoupper($a['type']) . ' ' . $a['name'];
+        if ($a['health'] === 'dark' && (!$parent || $parent['health'] !== 'dark')) {
+            $cust = array_slice(array_map(function ($o) { return $o['name']; }, mobile_api_netmap_subtree_onus($id, $kids, $onus)), 0, 6);
+            $n = $a['off'];
+            if (!$parent) {
+                $kind = 'node';
+                $text = 'All ' . $n . ' ONU(s) under ' . $label . ' are offline. Check this node: its power, uplink or the fibre into it.';
+            } elseif ($a['total'] === 1 && $a['own'] === 1) {
+                $kind = 'drop';
+                $text = 'The only ONU on ' . $label . ' is offline while ' . strtoupper($parent['type']) . ' ' . $parent['name'] . ' still has working ONUs. Check its power or the drop cable.';
+            } else {
+                $kind = 'cable';
+                $text = 'All ' . $n . ' ONU(s) under ' . $label . ' are offline while ' . strtoupper($parent['type']) . ' ' . $parent['name'] . ' still has working ONUs. Check the cable feeding it'
+                    . ($a['cable'] !== '' ? ' (' . $a['cable'] . ')' : '') . ' and the splitter at ' . $label . '.';
+            }
+            $out[] = ['asset_id' => $id, 'kind' => $kind, 'severity' => 'down', 'title' => $label, 'text' => $text, 'offline' => $n, 'customers' => $cust];
+        } elseif ($a['health'] === 'weak' && (!$parent || $parent['health'] !== 'weak')) {
+            $out[] = ['asset_id' => $id, 'kind' => 'signal', 'severity' => 'weak', 'title' => $label,
+                'text' => $a['weak'] . ' of ' . $a['total'] . ' ONU(s) under ' . $label . ' have weak signal. Look for a dirty connector, a tight bend or a bad splice on the cable feeding it.',
+                'offline' => 0, 'customers' => array_slice(array_map(function ($o) { return $o['name']; }, array_filter(mobile_api_netmap_subtree_onus($id, $kids, $onus), function ($o) { return in_array($o['rx_state'], ['warn', 'over'], true); })), 0, 6)];
+        }
+        if ($a['flag']) {
+            $out[] = ['asset_id' => $id, 'kind' => 'flag', 'severity' => 'flag', 'title' => $label, 'text' => 'Marked as a fault by staff' . ($a['note'] !== '' ? ': ' . $a['note'] : '') . '.', 'offline' => $a['off'], 'customers' => []];
+        }
+    }
+    usort($out, function ($x, $y) { $r = ['down' => 0, 'flag' => 1, 'weak' => 2]; return $r[$x['severity']] <=> $r[$y['severity']] ?: $y['offline'] <=> $x['offline']; });
+    return $out;
+}
+
+function mobile_api_netmap_data()
+{
+    list($assets, $onus, $kids, $live) = mobile_api_netmap_build();
+    $faults = mobile_api_netmap_faults($assets, $onus, $kids);
+    $on = $off = 0;
+    foreach ($onus as $o) { if ($o['online'] === true) $on++; elseif ($o['online'] === false) $off++; }
+    mobile_api_out(['ok' => true, 'live' => $live !== false, 'assets' => array_values($assets), 'onus' => $onus, 'faults' => $faults,
+        'stats' => ['assets' => count($assets), 'onus' => count($onus), 'online' => $on, 'offline' => $off, 'faults' => count(array_filter($faults, function ($f) { return $f['severity'] === 'down'; }))],
+        'default' => [mobile_api_netmap_default_lat(), mobile_api_netmap_default_lng()]]);
+}
+
+function mobile_api_netmap_default_lat()
+{
+    $r = mobile_api_safe(function () { return mobile_api_rows("SELECT v FROM tbl_ftth_settings WHERE k = 'default_lat'"); }, []);
+    return $r ? (float) $r[0]['v'] : -1.286389;
+}
+
+function mobile_api_netmap_default_lng()
+{
+    $r = mobile_api_safe(function () { return mobile_api_rows("SELECT v FROM tbl_ftth_settings WHERE k = 'default_lng'"); }, []);
+    return $r ? (float) $r[0]['v'] : 36.817223;
+}
+
+/** The chain from the OLT down to a node, one entry per hop with the cable that feeds it. */
+function mobile_api_netmap_path($assets, $id)
+{
+    $path = [];
+    $guard = 0;
+    while ($id && isset($assets[$id]) && $guard++ < 20) {
+        $a = $assets[$id];
+        array_unshift($path, ['id' => $a['id'], 'type' => $a['type'], 'name' => $a['name'], 'cable' => $a['cable'], 'cores' => $a['cores'], 'length_m' => $a['length_m'],
+            'split' => $a['split'], 'port' => $a['port'], 'health' => $a['health'], 'on' => $a['on'], 'off' => $a['off'], 'total' => $a['total']]);
+        $id = $a['parent_id'];
+    }
+    return $path;
+}
+
+function mobile_api_netmap_feed_text($deviceId)
+{
+    $f = mobile_api_safe(function () use ($deviceId) { return mobile_api_rows('SELECT asset_id, port FROM tbl_mobile_onu_feed WHERE device_id = ?', [$deviceId]); }, []);
+    if (!$f) return '';
+    $assets = [];
+    foreach (mobile_api_rows('SELECT a.id, a.type, a.name, n.parent_id, n.cable, n.port FROM tbl_ftth_assets a LEFT JOIN tbl_mobile_net n ON n.asset_id = a.id') as $a) {
+        $assets[(int) $a['id']] = ['id' => (int) $a['id'], 'type' => $a['type'], 'name' => $a['name'], 'parent_id' => (int) $a['parent_id'], 'cable' => (string) $a['cable'], 'cores' => '', 'length_m' => null, 'split' => '', 'port' => (string) $a['port'],
+            'health' => '', 'on' => 0, 'off' => 0, 'total' => 0];
+    }
+    $parts = [];
+    foreach (mobile_api_netmap_path($assets, (int) $f[0]['asset_id']) as $p) $parts[] = strtoupper($p['type']) . ' ' . $p['name'];
+    return implode(' > ', $parts) . ($f[0]['port'] !== '' && $f[0]['port'] !== null ? ' (port ' . $f[0]['port'] . ')' : '');
+}
+
+function mobile_api_netmap_trace()
+{
+    list($assets, $onus, $kids, $live) = mobile_api_netmap_build();
+    $did = trim((string) mobile_api_in('device_id'));
+    $onu = null;
+    if ($did !== '') {
+        foreach ($onus as $o) if ($o['id'] === $did) $onu = $o;
+        if (!$onu) mobile_api_fail('That ONU is not placed on the map', 404);
+        $aid = $onu['asset_id'];
+    } else {
+        $aid = (int) mobile_api_in('asset_id');
+        if (!isset($assets[$aid])) mobile_api_fail('Point not found', 404);
+    }
+    $path = mobile_api_netmap_path($assets, $aid);
+    $verdict = 'Everything on this path looks fine.';
+    $dark = null;
+    foreach ($path as $i => $p) {
+        if ($p['health'] === 'dark') { $dark = $i; break; }
+    }
+    if ($live === false) {
+        $verdict = 'Live status is not available (GenieACS did not answer), so faults cannot be worked out right now.';
+    } elseif ($dark !== null) {
+        $p = $path[$dark];
+        $up = $dark > 0 ? $path[$dark - 1] : null;
+        $verdict = $up
+            ? 'Likely fault: the cable feeding ' . strtoupper($p['type']) . ' ' . $p['name'] . ($p['cable'] !== '' ? ' (' . $p['cable'] . ')' : '') . ' from ' . strtoupper($up['type']) . ' ' . $up['name'] . ', or the splitter at ' . $p['name'] . '. Every ONU below it is offline.'
+            : 'Likely fault at ' . strtoupper($p['type']) . ' ' . $p['name'] . ' itself. Every ONU below it is offline.';
+    } elseif ($onu && $onu['online'] === false) {
+        $verdict = 'Only this ONU is offline while the rest of ' . strtoupper($assets[$aid]['type']) . ' ' . $assets[$aid]['name'] . ' is working: check its power, the drop cable or the ONU.';
+    } elseif ($onu && in_array($onu['rx_state'], ['warn', 'over'], true)) {
+        $verdict = 'The ONU is online but its signal is weak (' . $onu['rx'] . ' dBm): check connectors and bends on the drop cable.';
+    }
+    mobile_api_out(['ok' => true, 'path' => $path, 'onu' => $onu, 'verdict' => $verdict, 'live' => $live !== false]);
+}
+
+function mobile_api_netmap_unplaced()
+{
+    $docs = mobile_api_nbi('/devices?projection=' . rawurlencode('_id,_lastInform,_deviceId,VirtualParameters'));
+    if (!is_array($docs)) mobile_api_fail('GenieACS is not reachable, so the ONU list is not available', 502);
+    list($links, $rx) = mobile_api_onu_maps();
+    $placed = [];
+    foreach (mobile_api_rows('SELECT device_id FROM tbl_mobile_onu_feed') as $f) $placed[$f['device_id']] = true;
+    $q = strtolower(trim((string) mobile_api_in('q')));
+    $out = [];
+    foreach ($docs as $d) {
+        if (!isset($d['_id']) || isset($placed[(string) $d['_id']])) continue;
+        $r = mobile_api_onu_row($d, $links, $rx);
+        $name = $r['customer'] ? $r['customer']['name'] : '';
+        if ($q !== '' && strpos(strtolower($r['id'] . ' ' . $r['serial'] . ' ' . $name . ' ' . ($r['customer'] ? $r['customer']['phone'] : '')), $q) === false) continue;
+        $out[] = ['id' => $r['id'], 'serial' => $r['serial'], 'model' => $r['model'], 'online' => $r['online'], 'customer' => $name];
+        if (count($out) >= 60) break;
+    }
+    mobile_api_out(['ok' => true, 'onus' => $out]);
+}
+
+function mobile_api_netmap_writer($s)
+{
+    if (empty($s['access']['create'])) mobile_api_fail('Your role cannot change the map', 403);
+}
+
+function mobile_api_netmap_asset_save($s)
+{
+    mobile_api_netmap_writer($s);
+    $id = (int) mobile_api_in('id');
+    $type = (string) mobile_api_in('type');
+    $name = trim((string) mobile_api_in('name'));
+    if (!in_array($type, mobile_api_netmap_types(), true)) mobile_api_fail('Choose what this point is (OLT, ODC, ODP, pole or router)', 422);
+    if ($name === '') mobile_api_fail('Enter a name', 422);
+    $lat = mobile_api_in('lat');
+    $lng = mobile_api_in('lng');
+    if (!is_numeric($lat) || !is_numeric($lng) || abs((float) $lat) > 90 || abs((float) $lng) > 180) mobile_api_fail('Enter the location as latitude and longitude, or use your location', 422);
+    $coord = round((float) $lat, 7) . ',' . round((float) $lng, 7);
+    $parent = (int) mobile_api_in('parent_id');
+    if ($parent) {
+        if (!mobile_api_rows('SELECT id FROM tbl_ftth_assets WHERE id = ?', [$parent])) mobile_api_fail('The feeding point was not found', 404);
+        if ($id && $parent === $id) mobile_api_fail('A point cannot feed itself', 422);
+        // never loop: walk up from the chosen feeder and make sure we do not meet this point
+        $g = 0;
+        $x = $parent;
+        while ($id && $x && $g++ < 30) {
+            if ($x === $id) mobile_api_fail('That would make a loop (the chosen feeder is fed by this point)', 422);
+            $r = mobile_api_rows('SELECT parent_id FROM tbl_mobile_net WHERE asset_id = ?', [$x]);
+            $x = $r && $r[0]['parent_id'] ? (int) $r[0]['parent_id'] : 0;
+        }
+    }
+    $cable = mb_substr(trim((string) mobile_api_in('cable')), 0, 80);
+    $cores = mb_substr(trim((string) mobile_api_in('cores')), 0, 20);
+    $split = mb_substr(trim((string) mobile_api_in('split')), 0, 12);
+    $port = mb_substr(trim((string) mobile_api_in('port')), 0, 20);
+    $len = mobile_api_in('length_m');
+    $len = is_numeric($len) && (int) $len >= 0 && (int) $len < 200000 ? (int) $len : null;
+    $note = mb_substr(trim((string) mobile_api_in('note')), 0, 255);
+    $status = (string) mobile_api_in('flag') === '1' ? 'problem' : 'ok';
+    $db = ORM::get_db();
+    if ($id) {
+        if (!mobile_api_rows('SELECT id FROM tbl_ftth_assets WHERE id = ?', [$id])) mobile_api_fail('Point not found', 404);
+        $db->prepare('UPDATE tbl_ftth_assets SET type = ?, name = ?, coordinates = ?, status = ?, note = ? WHERE id = ?')->execute([$type, mb_substr($name, 0, 120), $coord, $status, $note, $id]);
+    } else {
+        $db->prepare('INSERT INTO tbl_ftth_assets (type, name, coordinates, status, note) VALUES (?,?,?,?,?)')->execute([$type, mb_substr($name, 0, 120), $coord, $status, $note]);
+        $id = (int) $db->lastInsertId();
+    }
+    $db->prepare('INSERT INTO tbl_mobile_net (asset_id, parent_id, cable, cores, length_m, split, port, updated_at) VALUES (?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE parent_id = VALUES(parent_id), cable = VALUES(cable), cores = VALUES(cores), length_m = VALUES(length_m), split = VALUES(split), port = VALUES(port), updated_at = VALUES(updated_at)')
+        ->execute([$id, $parent ?: null, $cable, $cores, $len, $split, $port, date('Y-m-d H:i:s')]);
+    mobile_api_out(['ok' => true, 'id' => $id, 'message' => 'Saved ' . strtoupper($type) . ' ' . $name]);
+}
+
+function mobile_api_netmap_asset_delete($s)
+{
+    mobile_api_netmap_writer($s);
+    $id = (int) mobile_api_in('id');
+    if (!mobile_api_rows('SELECT id FROM tbl_ftth_assets WHERE id = ?', [$id])) mobile_api_fail('Point not found', 404);
+    if (mobile_api_rows('SELECT 1 FROM tbl_mobile_net WHERE parent_id = ? LIMIT 1', [$id])) mobile_api_fail('Other points are fed from this one. Move or delete them first.', 409);
+    if (mobile_api_rows('SELECT 1 FROM tbl_mobile_onu_feed WHERE asset_id = ? LIMIT 1', [$id])) mobile_api_fail('ONUs are placed on this point. Move them first.', 409);
+    $db = ORM::get_db();
+    $db->prepare('DELETE FROM tbl_ftth_assets WHERE id = ?')->execute([$id]);
+    $db->prepare('DELETE FROM tbl_mobile_net WHERE asset_id = ?')->execute([$id]);
+    mobile_api_out(['ok' => true, 'message' => 'Point deleted']);
+}
+
+function mobile_api_netmap_onu_place($s)
+{
+    mobile_api_netmap_writer($s);
+    $did = trim((string) mobile_api_in('device_id'));
+    if ($did === '' || strlen($did) > 190 || !preg_match('/^[A-Za-z0-9._%\-]+$/', $did)) mobile_api_fail('Choose an ONU', 422);
+    $aid = (int) mobile_api_in('asset_id');
+    $db = ORM::get_db();
+    if ($aid === 0) {
+        $db->prepare('DELETE FROM tbl_mobile_onu_feed WHERE device_id = ?')->execute([$did]);
+        mobile_api_out(['ok' => true, 'message' => 'ONU removed from the map']);
+    }
+    if (!mobile_api_rows('SELECT id FROM tbl_ftth_assets WHERE id = ?', [$aid])) mobile_api_fail('Point not found', 404);
+    $lat = mobile_api_in('lat');
+    $lng = mobile_api_in('lng');
+    $hasPos = is_numeric($lat) && is_numeric($lng) && abs((float) $lat) <= 90 && abs((float) $lng) <= 180;
+    $db->prepare('INSERT INTO tbl_mobile_onu_feed (device_id, asset_id, port, lat, lng, updated_at) VALUES (?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE asset_id = VALUES(asset_id), port = VALUES(port), lat = VALUES(lat), lng = VALUES(lng), updated_at = VALUES(updated_at)')
+        ->execute([$did, $aid, mb_substr(trim((string) mobile_api_in('port')), 0, 20), $hasPos ? (float) $lat : null, $hasPos ? (float) $lng : null, date('Y-m-d H:i:s')]);
+    mobile_api_out(['ok' => true, 'message' => 'ONU placed']);
 }

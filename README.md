@@ -129,3 +129,13 @@ Re-upload `server/system/plugin/mobile_api.php`; new tables are created automati
 **Manual activation (outage)**: **Activation** tab (module "Manual activation (outage)"). Choose one customer, or everyone whose plan ended in the last N hours; choose the days to add (1 to 30) and the speed (any enabled plan, shown with its speed, or keep each customer's own plan); a reason is required. You review the list, then confirm. Days are added from now or from the end of the current plan, whichever is later. It goes through the billing engine at zero price (so routers are updated and the transaction is recorded as "Manual Activation"), is listed in Recent activations and the audit log, and the customer is notified. Limit 500 customers per run.
 
 Re-upload `server/system/plugin/mobile_api.php`, tick **Loyalty points and referrals** and **Manual activation (outage)** on the Access screen for the people who should see them.
+
+## Fibre and splitter map
+
+**Fibre map** tab (module "Fibre and splitter map"). It uses the points of the website's FTTH Mapping plugin (OLT, ODC, ODP, pole, router in `tbl_ftth_assets`, so both places show the same points) and adds which point feeds which, and by which cable (`tbl_mobile_net`), plus which splitter each ONU hangs on (`tbl_mobile_onu_feed`).
+- **Map** (OpenStreetMap, no key needed): coloured dots for every point and ONU, lines for the cables, tap anything for details. Red = every ONU below is offline, amber = some offline or weak signal, green = fine, grey = unknown or empty.
+- **Network**: the same thing as a tree (OLT > ODC > ODP) with offline counts per branch.
+- **Faults**: worked out from live GenieACS status. When all ONUs below a point go offline while the point that feeds it still has working ONUs, the fault is shown as the cable feeding it or its splitter, with the affected customers. A single offline ONU on a healthy splitter is shown as a drop cable or ONU problem. Several weak signals on one branch point to a connector, bend or splice. Staff can also mark a point as a fault by hand.
+- Tapping a point or an ONU shows the path from the OLT down, with the cable and port at each hop, and a plain-language verdict. Customer 360 shows "Fed by" for the customer's ONU.
+- Add or edit points (with "Use my location"), say what feeds them (feeding point, cable, cores, length, splitter ratio, port), and place ONUs on splitters. People with "Can create" can edit; deleting is blocked while anything is fed from, or placed on, a point. Edits are in the audit log.
+- Start by adding or fixing the feeder chain on a few OLTs, then place their ONUs: fault detection only knows about ONUs that are placed.

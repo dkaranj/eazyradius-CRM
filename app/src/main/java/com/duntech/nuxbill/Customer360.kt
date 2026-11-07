@@ -76,6 +76,7 @@ fun Customer360Dialog(find: Map<String, String>, onClose: () -> Unit, onRecharge
                                 )
                                 KeyValue("Signal", if (o.isNull("rx")) "" else o.optDouble("rx").toString() + " dBm")
                                 KeyValue("Last seen", o.optString("last_inform"))
+                                if (o.optString("feed").isNotBlank()) KeyValue("Fed by", o.optString("feed"))
                             }
                         }
                     }
