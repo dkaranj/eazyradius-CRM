@@ -92,7 +92,7 @@ fun ClientHome(reload: Int) {
             }
         }
     }
-    if (showStk) StkDialog(phoneNo) { showStk = false; homeBump++ }
+    if (showStk) StkDialog(phoneNo, onClose = { showStk = false; homeBump++ })
     if (showWifi) WifiDialog { showWifi = false }
     if (showRewards) RewardsDialog { showRewards = false; homeBump++ }
     if (showPause) PauseDialog(onClose = { showPause = false }, onChanged = { homeBump++ })
