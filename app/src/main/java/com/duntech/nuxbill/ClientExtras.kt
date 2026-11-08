@@ -38,7 +38,7 @@ fun NoticeBanner(reload: Int) {
 
 /** Sends an M-Pesa prompt to the customer's phone and watches for the answer. */
 @Composable
-fun StkDialog(phone: String, onClose: () -> Unit) {
+fun StkDialog(phone: String, onClose: () -> Unit, forId: Int = 0) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var amount by remember { mutableStateOf("") }
@@ -85,7 +85,7 @@ fun StkDialog(phone: String, onClose: () -> Unit) {
                     busy = true
                     scope.launch {
                         try {
-                            val r = Api.call("client_stk", mapOf("amount" to amount, "phone" to ph))
+                            val r = Api.call("client_stk", mapOf("amount" to amount, "phone" to ph) + (if (forId > 0) mapOf("for" to forId.toString()) else emptyMap()))
                             status = r.optString("message")
                             payId = r.optInt("id")
                         } catch (e: Exception) {

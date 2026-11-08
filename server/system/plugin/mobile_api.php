@@ -34,6 +34,9 @@ function mobile_api()
         if ($a === 'mpesa_cb') {
             mobile_api_mpesa_cb();
         }
+        if ($a === 'coverage_public') {
+            mobile_api_coverage_public();
+        }
 
         $s = mobile_api_auth();
 
@@ -263,6 +266,58 @@ function mobile_api()
             case 'netmap_onu_place':
                 mobile_api_mod($s, 'netmap');
                 mobile_api_netmap_onu_place($s);
+
+            // ---- pause, auto-renew, family (client) ----
+            case 'client_pause_status':
+                mobile_api_client_only($s);
+                mobile_api_client_pause_status($s);
+            case 'client_pause_start':
+                mobile_api_client_only($s);
+                mobile_api_client_pause_start($s);
+            case 'client_pause_resume':
+                mobile_api_client_only($s);
+                mobile_api_client_pause_resume($s);
+            case 'client_autorenew_set':
+                mobile_api_client_only($s);
+                mobile_api_client_autorenew_set($s);
+            case 'client_family':
+                mobile_api_client_only($s);
+                mobile_api_client_family($s);
+            case 'client_family_add':
+                mobile_api_client_only($s);
+                mobile_api_client_family_add($s);
+            case 'client_family_respond':
+                mobile_api_client_only($s);
+                mobile_api_client_family_respond($s);
+            case 'client_family_remove':
+                mobile_api_client_only($s);
+                mobile_api_client_family_remove($s);
+            case 'client_family_member':
+                mobile_api_client_only($s);
+                mobile_api_client_family_member($s);
+            case 'client_family_buy':
+                mobile_api_client_only($s);
+                mobile_api_client_family_buy($s);
+
+            // ---- pauses and coverage (staff) ----
+            case 'pause_overview':
+                mobile_api_mod($s, 'pause');
+                mobile_api_pause_overview();
+            case 'pause_staff_start':
+                mobile_api_mod($s, 'pause');
+                mobile_api_pause_staff_start($s);
+            case 'pause_staff_resume':
+                mobile_api_mod($s, 'pause');
+                mobile_api_pause_staff_resume($s);
+            case 'pause_settings_save':
+                mobile_api_mod($s, 'pause');
+                mobile_api_pause_settings_save($s);
+            case 'coverage_geocode':
+                mobile_api_mod($s, 'coverage');
+                mobile_api_coverage_geocode();
+            case 'coverage_check':
+                mobile_api_mod($s, 'coverage');
+                mobile_api_coverage_check();
 
             // ---- notices (staff) ----
             case 'notice_list':
@@ -600,6 +655,39 @@ function mobile_api_boot()
                 lng DECIMAL(10,7) NULL,
                 updated_at DATETIME NOT NULL,
                 KEY idx_asset (asset_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_pause' => [
+            ['customer_id', 'status', 'counted', 'started_at', 'ends_at', 'ended_at', 'days_planned', 'rows_json', 'by_type', 'by_name', 'reason', 'fails'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_pause (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT NOT NULL,
+                status VARCHAR(10) NOT NULL DEFAULT 'paused',
+                counted TINYINT NOT NULL DEFAULT 1,
+                started_at DATETIME NOT NULL,
+                ends_at DATETIME NOT NULL,
+                ended_at DATETIME NULL,
+                days_planned INT NOT NULL,
+                rows_json TEXT NULL,
+                by_type VARCHAR(10) NOT NULL DEFAULT 'customer',
+                by_name VARCHAR(100) NULL,
+                reason VARCHAR(200) NULL,
+                fails INT NOT NULL DEFAULT 0,
+                KEY idx_cust (customer_id),
+                KEY idx_status (status, ends_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_family' => [
+            ['owner_id', 'member_id', 'status', 'created_at', 'answered_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_family (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                owner_id INT NOT NULL,
+                member_id INT NOT NULL,
+                status VARCHAR(10) NOT NULL DEFAULT 'pending',
+                created_at DATETIME NOT NULL,
+                answered_at DATETIME NULL,
+                UNIQUE KEY uq_pair (owner_id, member_id),
+                KEY idx_member (member_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_notices' => [
@@ -1674,6 +1762,8 @@ function mobile_api_client_home($s)
         'balance' => mobile_api_money($c['balance']),
         'balance_raw' => (float) $c['balance'],
         'plan' => $plan,
+        'pause' => mobile_api_pause_home((int) $c['id']),
+        'auto_renew' => mobile_api_autorenew_home($c, $r),
     ]]);
 }
 
@@ -2043,6 +2133,7 @@ function mobile_api_catalog()
         ['key' => 'customers', 'label' => 'Customers and recharge', 'group' => 'General'],
         ['key' => 'payments', 'label' => 'Payments', 'group' => 'General'],
         ['key' => 'loyalty', 'label' => 'Loyalty points and referrals', 'group' => 'General'],
+        ['key' => 'pause', 'label' => 'Subscription pauses', 'group' => 'General'],
         ['key' => 'reports', 'label' => 'Reports: revenue, expiring, team', 'group' => 'General'],
         ['key' => 'leads', 'label' => 'Leads', 'group' => 'Operations'],
         ['key' => 'installations', 'label' => 'Installations', 'group' => 'Operations'],
@@ -2056,6 +2147,7 @@ function mobile_api_catalog()
         ['key' => 'hr_payroll', 'label' => 'Payroll (view only)', 'group' => 'HR'],
         ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
         ['key' => 'netmap', 'label' => 'Fibre and splitter map', 'group' => 'Network'],
+        ['key' => 'coverage', 'label' => 'Coverage check', 'group' => 'Operations'],
         ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
         ['key' => 'notices', 'label' => 'Outage notices to customers', 'group' => 'Network'],
         ['key' => 'activation', 'label' => 'Manual activation (outage)', 'group' => 'Network'],
@@ -2787,6 +2879,8 @@ function mobile_api_audited()
         'inst_pay_record' => 'install_payment', 'inst_pay_waive' => 'install_waive',
         'client_loyalty_apply' => 'referral_apply', 'client_loyalty_redeem' => 'points_redeem', 'loyalty_settings_save' => 'loyalty_settings', 'loyalty_adjust' => 'points_adjust',
         'loyalty_referrer_set' => 'referrer_set', 'activation_apply' => 'manual_activation',
+        'client_pause_start' => 'pause', 'client_pause_resume' => 'pause_resume', 'pause_staff_start' => 'pause_staff', 'pause_staff_resume' => 'pause_staff_resume', 'pause_settings_save' => 'pause_settings',
+        'client_autorenew_set' => 'autorenew', 'client_family_add' => 'family_add', 'client_family_respond' => 'family_answer', 'client_family_remove' => 'family_remove', 'client_family_buy' => 'family_buy',
         'netmap_asset_save' => 'netmap_save', 'netmap_asset_delete' => 'netmap_delete', 'netmap_onu_place' => 'netmap_onu',
     ];
 }
@@ -3365,7 +3459,7 @@ function mobile_api_notify_poll($s)
 {
     $now = time();
     mobile_api_safe(function () {
-        mobile_api_loyalty_sync();
+        mobile_api_housekeeping();
     }, null);
     $items = [];
     $maxId = 0;
@@ -4786,6 +4880,8 @@ function mobile_api_client_stk($s)
     $day = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_stk WHERE customer_id = ? AND created_at > ?", [(int) $c['id'], date('Y-m-d H:i:s', time() - 86400)]);
     if ((int) $day[0]['n'] >= 10) mobile_api_fail('Daily limit reached. Please pay to the paybill instead.', 429);
 
+    $target = $c;
+    if ((int) mobile_api_in('for', 0) > 0) $target = mobile_api_family_target($c, (int) mobile_api_in('for'));
     $tok = mobile_api_mpesa_token();
     $ts = date('YmdHis');
     $short = (string) $config['mpesa_business_code'];
@@ -4801,7 +4897,7 @@ function mobile_api_client_stk($s)
         'PartyB' => $short,
         'PhoneNumber' => $phone,
         'CallBackURL' => rtrim($base, '/') . '/?_route=plugin/mobile_api&a=mpesa_cb',
-        'AccountReference' => mb_substr($c['username'], 0, 12),
+        'AccountReference' => mb_substr($target['username'], 0, 12),
         'TransactionDesc' => 'Internet',
     ], $tok);
     if ($code !== 200 || (isset($j['ResponseCode']) && (string) $j['ResponseCode'] !== '0') || empty($j['CheckoutRequestID'])) {
@@ -5329,7 +5425,7 @@ function mobile_api_netmap_build()
             'id' => (int) $a['id'], 'type' => $a['type'], 'name' => $a['name'], 'lat' => $la, 'lng' => $ln, 'flag' => $a['status'] === 'problem', 'note' => (string) $a['note'],
             'parent_id' => $a['parent_id'] === null ? 0 : (int) $a['parent_id'], 'cable' => (string) $a['cable'], 'cores' => (string) $a['cores'],
             'length_m' => $a['length_m'] === null ? null : (int) $a['length_m'], 'split' => (string) $a['split'], 'port' => (string) $a['port'],
-            'own' => 0, 'total' => 0, 'on' => 0, 'off' => 0, 'weak' => 0, 'health' => 'empty',
+            'capacity' => preg_match('/:\\s*(\\d+)/', (string) $a['split'], $mm) ? (int) $mm[1] : null, 'own' => 0, 'total' => 0, 'on' => 0, 'off' => 0, 'weak' => 0, 'health' => 'empty',
         ];
     }
     foreach ($assets as $id => &$a) {
@@ -5640,4 +5736,542 @@ function mobile_api_netmap_onu_place($s)
         ON DUPLICATE KEY UPDATE asset_id = VALUES(asset_id), port = VALUES(port), lat = VALUES(lat), lng = VALUES(lng), updated_at = VALUES(updated_at)')
         ->execute([$did, $aid, mb_substr(trim((string) mobile_api_in('port')), 0, 20), $hasPos ? (float) $lat : null, $hasPos ? (float) $lng : null, date('Y-m-d H:i:s')]);
     mobile_api_out(['ok' => true, 'message' => 'ONU placed']);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* housekeeping: runs lazily from the poll, at most once a minute      */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_housekeeping()
+{
+    $last = (int) mobile_api_setting('hk_last', 0);
+    if (time() - $last < 45) return;
+    mobile_api_setting_set('hk_last', time());
+    foreach (['mobile_api_loyalty_sync', 'mobile_api_pause_sync', 'mobile_api_autorenew_warn'] as $fn) {
+        try {
+            $fn();
+        } catch (Throwable $e) {
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* pause a subscription                                                */
+/* The router is told to disconnect the customer, the time left is kept, */
+/* and on resume the same time is added back from that moment.          */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_pause_cfg()
+{
+    return ['yearly' => max(0, (int) mobile_api_setting('pause_yearly', 2)), 'days' => max(1, min(90, (int) mobile_api_setting('pause_days', 30)))];
+}
+
+function mobile_api_device_apply($plan, $cust, $op)
+{
+    if (empty($plan['device'])) return; // plan not tied to a router device: the database is all there is
+    if (!class_exists('Package') || !method_exists('Package', 'getDevice')) throw new Exception('The billing engine is not available');
+    $dvc = Package::getDevice($plan);
+    if (!file_exists($dvc)) throw new Exception('Device driver not found: ' . $plan['device']);
+    require_once $dvc;
+    $cls = $plan['device'];
+    $obj = new $cls();
+    if ($op === 'remove') $obj->remove_customer($cust, $plan);
+    else $obj->add_customer($cust, $plan);
+}
+
+function mobile_api_pause_active($cid)
+{
+    $r = mobile_api_rows("SELECT * FROM tbl_mobile_pause WHERE customer_id = ? AND status = 'paused' ORDER BY id DESC LIMIT 1", [(int) $cid]);
+    return $r ? $r[0] : null;
+}
+
+function mobile_api_pause_used($cid)
+{
+    $r = mobile_api_rows('SELECT COUNT(*) n FROM tbl_mobile_pause WHERE customer_id = ? AND counted = 1 AND started_at >= ?', [(int) $cid, date('Y-01-01 00:00:00')]);
+    return (int) $r[0]['n'];
+}
+
+/** Active plans that can be paused: day-based plans with at least a day left. */
+function mobile_api_pause_rows($cid)
+{
+    return mobile_api_rows("SELECT r.id rid, r.plan_id, r.namebp, r.expiration, r.time, r.type FROM tbl_user_recharges r JOIN tbl_plans p ON p.id = r.plan_id
+        WHERE r.customer_id = ? AND r.status = 'on' AND p.validity_unit IN ('Days','Months','Period') AND CONCAT(r.expiration, ' ', r.time) > ?",
+        [(int) $cid, date('Y-m-d H:i:s', time() + 86400)]);
+}
+
+function mobile_api_pause_why_not($cid, $counted)
+{
+    $cfg = mobile_api_pause_cfg();
+    if (mobile_api_pause_active($cid)) return 'This subscription is already paused';
+    if ($counted && mobile_api_pause_used($cid) >= $cfg['yearly']) return 'All ' . $cfg['yearly'] . ' pauses for this year have been used';
+    if (!mobile_api_pause_rows($cid)) return 'A pause needs an active plan with at least 1 day left';
+    return null;
+}
+
+function mobile_api_pause_view($p)
+{
+    $left = 0;
+    $rows = json_decode((string) $p['rows_json'], true) ?: [];
+    foreach ($rows as $r) $left = max($left, (int) ceil($r['rem'] / 86400));
+    return ['id' => (int) $p['id'], 'started' => $p['started_at'], 'ends' => $p['ends_at'], 'days_planned' => (int) $p['days_planned'], 'days_kept' => $left,
+        'status' => $p['status'], 'by' => $p['by_type'], 'counted' => (bool) $p['counted']];
+}
+
+function mobile_api_pause_home($cid)
+{
+    $p = mobile_api_pause_active($cid);
+    return $p ? ['active' => true, 'until' => $p['ends_at'], 'days_kept' => mobile_api_pause_view($p)['days_kept']] : ['active' => false];
+}
+
+function mobile_api_client_pause_status($s)
+{
+    $cid = (int) $s['user_id'];
+    $cfg = mobile_api_pause_cfg();
+    $used = mobile_api_pause_used($cid);
+    $active = mobile_api_pause_active($cid);
+    $why = mobile_api_pause_why_not($cid, true);
+    $hist = [];
+    foreach (mobile_api_rows('SELECT * FROM tbl_mobile_pause WHERE customer_id = ? ORDER BY id DESC LIMIT 10', [$cid]) as $p) $hist[] = mobile_api_pause_view($p);
+    mobile_api_out(['ok' => true, 'eligible' => $why === null, 'reason' => (string) $why, 'yearly' => $cfg['yearly'], 'used' => $used, 'left' => max(0, $cfg['yearly'] - $used),
+        'max_days' => $cfg['days'], 'active' => $active ? mobile_api_pause_view($active) : null, 'history' => $hist]);
+}
+
+/** Does the work for both the customer and staff. Fails with a message, never half-pauses. */
+function mobile_api_pause_begin($cid, $days, $counted, $byType, $byName, $reason)
+{
+    $cfg = mobile_api_pause_cfg();
+    if ($days < 1 || $days > $cfg['days']) mobile_api_fail('Choose between 1 and ' . $cfg['days'] . ' days', 422);
+    $why = mobile_api_pause_why_not($cid, $counted);
+    if ($why !== null) mobile_api_fail($why, 422);
+    $cust = ORM::for_table('tbl_customers')->find_one((int) $cid);
+    if (!$cust) mobile_api_fail('Customer not found', 404);
+    $now = time();
+    $kept = [];
+    $done = [];
+    try {
+        foreach (mobile_api_pause_rows($cid) as $r) {
+            $plan = ORM::for_table('tbl_plans')->find_one((int) $r['plan_id']);
+            mobile_api_device_apply($plan, $cust, 'remove');
+            $done[] = [$plan, $r];
+            $kept[] = ['rid' => (int) $r['rid'], 'rem' => max(0, strtotime($r['expiration'] . ' ' . $r['time']) - $now), 'name' => $r['namebp']];
+        }
+    } catch (Throwable $e) {
+        foreach ($done as $d) {
+            try { mobile_api_device_apply($d[0], $cust, 'add'); } catch (Throwable $x) { }
+        }
+        mobile_api_fail('Could not reach the router to pause the service. Nothing was changed. Try again shortly.', 502);
+    }
+    $db = ORM::get_db();
+    foreach ($kept as $k) $db->prepare("UPDATE tbl_user_recharges SET status = 'off' WHERE id = ?")->execute([$k['rid']]);
+    $ends = date('Y-m-d H:i:s', $now + $days * 86400);
+    $db->prepare('INSERT INTO tbl_mobile_pause (customer_id, status, counted, started_at, ends_at, days_planned, rows_json, by_type, by_name, reason) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        ->execute([(int) $cid, 'paused', $counted ? 1 : 0, date('Y-m-d H:i:s', $now), $ends, $days, json_encode($kept), $byType, mb_substr((string) $byName, 0, 100), mb_substr((string) $reason, 0, 200)]);
+    mobile_api_notify(-(int) $cid, 'pause', 'Your subscription is paused', 'Internet is off until ' . date('j M', $now + $days * 86400) . ' and then resumes by itself. The time you had left is kept.', 'pause', (int) $cid);
+    return $ends;
+}
+
+/** Brings the service back and adds the kept time from now. Returns false if the router could not be reached. */
+function mobile_api_pause_finish($p, $why)
+{
+    $cid = (int) $p['customer_id'];
+    $cust = ORM::for_table('tbl_customers')->find_one($cid);
+    $rows = json_decode((string) $p['rows_json'], true) ?: [];
+    $now = time();
+    $db = ORM::get_db();
+    $plans = [];
+    try {
+        foreach ($rows as $k) {
+            $r = ORM::for_table('tbl_user_recharges')->find_one((int) $k['rid']);
+            if (!$r) continue;
+            $plan = ORM::for_table('tbl_plans')->find_one((int) $r['plan_id']);
+            // bought something new while paused: keep what they paid for and add the kept time to it
+            $base = ($r['status'] === 'on') ? max($now, strtotime($r['expiration'] . ' ' . $r['time'])) : $now;
+            $end = $base + (int) $k['rem'];
+            if ($cust && $plan) mobile_api_device_apply($plan, $cust, 'add');
+            $plans[] = [$r, $plan, $end];
+        }
+    } catch (Throwable $e) {
+        return false;
+    }
+    foreach ($plans as $x) {
+        list($r, $plan, $end) = $x;
+        $db->prepare("UPDATE tbl_user_recharges SET status = 'on', expiration = ?, time = ? WHERE id = ?")->execute([date('Y-m-d', $end), date('H:i:s', $end), (int) $r['id']]);
+        // keep the on-time reward check honest: the last payment's end date moves with the pause
+        $db->prepare('UPDATE tbl_transactions SET expiration = ?, time = ? WHERE username = ? AND type = ? AND expiration > recharged_on ORDER BY id DESC LIMIT 1')
+            ->execute([date('Y-m-d', $end), date('H:i:s', $end), $r['username'], $r['type']]);
+    }
+    $db->prepare("UPDATE tbl_mobile_pause SET status = 'resumed', ended_at = ? WHERE id = ?")->execute([date('Y-m-d H:i:s', $now), (int) $p['id']]);
+    mobile_api_notify(-$cid, 'pause', 'Your internet is back', $why . ' Your remaining time has been added back.', 'pause', $cid);
+    return true;
+}
+
+function mobile_api_client_pause_start($s)
+{
+    $cid = (int) $s['user_id'];
+    $days = (int) mobile_api_in('days');
+    $ends = mobile_api_pause_begin($cid, $days, true, 'customer', 'customer', '');
+    mobile_api_out(['ok' => true, 'message' => 'Paused until ' . date('j M Y', strtotime($ends)) . '. Your internet is off and will come back by itself.']);
+}
+
+function mobile_api_client_pause_resume($s)
+{
+    $p = mobile_api_pause_active((int) $s['user_id']);
+    if (!$p) mobile_api_fail('Your subscription is not paused', 404);
+    if (!mobile_api_pause_finish($p, 'You resumed your subscription.')) mobile_api_fail('Could not reach the router to switch you back on. Please try again in a minute or contact support.', 502);
+    mobile_api_out(['ok' => true, 'message' => 'Welcome back. Your internet is on again.']);
+}
+
+/** Resumes pauses that reached their end date. A pause that keeps failing stops retrying and tells the managers once. */
+function mobile_api_pause_sync()
+{
+    foreach (mobile_api_rows("SELECT * FROM tbl_mobile_pause WHERE status = 'paused' AND ends_at <= ? AND fails < 3 ORDER BY ends_at LIMIT 20", [date('Y-m-d H:i:s')]) as $p) {
+        if (mobile_api_pause_finish($p, 'Your pause ended.')) continue;
+        $f = (int) $p['fails'] + 1;
+        ORM::get_db()->prepare('UPDATE tbl_mobile_pause SET fails = ? WHERE id = ?')->execute([$f, (int) $p['id']]);
+        if ($f >= 3) {
+            $c = ORM::for_table('tbl_customers')->find_one((int) $p['customer_id']);
+            mobile_api_notify_managers('customers', false, 'pause_fail', 'A paused customer could not be switched back on', ($c ? ($c['fullname'] ?: $c['username']) : '#' . $p['customer_id']) . ': resume the pause from the Pauses tab or recharge them.', 'pause', (int) $p['customer_id'], 0);
+        }
+    }
+}
+
+function mobile_api_pause_overview()
+{
+    mobile_api_pause_sync();
+    $cfg = mobile_api_pause_cfg();
+    $out = [];
+    foreach (mobile_api_rows("SELECT p.*, c.fullname, c.username, c.phonenumber FROM tbl_mobile_pause p JOIN tbl_customers c ON c.id = p.customer_id WHERE p.status = 'paused' ORDER BY p.ends_at LIMIT 100") as $p) {
+        $v = mobile_api_pause_view($p);
+        $v['customer_id'] = (int) $p['customer_id'];
+        $v['name'] = $p['fullname'] ?: $p['username'];
+        $v['phone'] = $p['phonenumber'];
+        $v['failed'] = (int) $p['fails'] >= 3;
+        $v['reason'] = (string) $p['reason'];
+        $out[] = $v;
+    }
+    mobile_api_out(['ok' => true, 'settings' => $cfg, 'paused' => $out]);
+}
+
+function mobile_api_pause_staff_start($s)
+{
+    $cid = (int) mobile_api_in('customer_id');
+    $reason = trim((string) mobile_api_in('reason'));
+    if (mb_strlen($reason) < 3) mobile_api_fail('Write a short reason', 422);
+    $counted = (string) mobile_api_in('counted') === '1';
+    $ends = mobile_api_pause_begin($cid, (int) mobile_api_in('days'), $counted, 'staff', $s['access']['name'], $reason);
+    mobile_api_out(['ok' => true, 'message' => 'Paused until ' . date('j M Y', strtotime($ends))]);
+}
+
+function mobile_api_pause_staff_resume($s)
+{
+    $p = mobile_api_pause_active((int) mobile_api_in('customer_id'));
+    if (!$p) mobile_api_fail('That customer is not paused', 404);
+    if (!mobile_api_pause_finish($p, 'Your subscription was resumed by support.')) mobile_api_fail('Could not reach the router. Try again in a minute.', 502);
+    mobile_api_out(['ok' => true, 'message' => 'Resumed']);
+}
+
+function mobile_api_pause_settings_save($s)
+{
+    mobile_api_need_manager(mobile_api_actor($s));
+    $y = mobile_api_in('yearly');
+    $d = mobile_api_in('days');
+    if (!is_numeric($y) || (int) $y < 0 || (int) $y > 12) mobile_api_fail('Pauses per year: 0 to 12', 422);
+    if (!is_numeric($d) || (int) $d < 1 || (int) $d > 90) mobile_api_fail('Days per pause: 1 to 90', 422);
+    mobile_api_setting_set('pause_yearly', (int) $y);
+    mobile_api_setting_set('pause_days', (int) $d);
+    mobile_api_out(['ok' => true, 'message' => 'Pause rules saved']);
+}
+
+/* ------------------------------------------------------------------ */
+/* auto-renew from the wallet                                          */
+/* The website's own cron renews expired plans when customers.auto_renewal is on; */
+/* this switches it and warns when the wallet is too low.              */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_autorenew_available()
+{
+    global $config;
+    return isset($config['enable_balance']) && $config['enable_balance'] === 'yes';
+}
+
+function mobile_api_autorenew_home($c, $r)
+{
+    $price = null;
+    if ($r) {
+        $p = mobile_api_rows('SELECT price FROM tbl_plans WHERE id = ?', [(int) $r['plan_id']]);
+        if ($p) $price = (float) $p[0]['price'];
+    }
+    return ['available' => mobile_api_autorenew_available(), 'on' => (bool) $c['auto_renewal'], 'price' => $price === null ? null : mobile_api_money($price),
+        'enough' => $price === null ? null : ((float) $c['balance'] >= $price)];
+}
+
+function mobile_api_client_autorenew_set($s)
+{
+    if (!mobile_api_autorenew_available()) mobile_api_fail('Renewing from the wallet is switched off on this network', 422);
+    $on = (string) mobile_api_in('on') === '1' ? 1 : 0;
+    $c = ORM::for_table('tbl_customers')->find_one((int) $s['user_id']);
+    if (!$c) mobile_api_fail('Account not found', 404);
+    $c->auto_renewal = $on;
+    $c->save();
+    $r = mobile_api_active_recharge((int) $c['id']);
+    $info = mobile_api_autorenew_home($c, $r);
+    $msg = $on ? 'Auto-renew is on. When your plan ends it is renewed from your wallet.' : 'Auto-renew is off.';
+    if ($on && $info['enough'] === false) $msg .= ' Your wallet is below the plan price (' . $info['price'] . '), so top up before it ends.';
+    mobile_api_out(['ok' => true, 'message' => $msg, 'auto_renew' => $info]);
+}
+
+/** One heads-up per plan end when auto-renew is on but the wallet will not cover it. */
+function mobile_api_autorenew_warn()
+{
+    if (!mobile_api_autorenew_available()) return;
+    $until = date('Y-m-d H:i:s', time() + 2 * 86400);
+    foreach (mobile_api_rows("SELECT r.id rid, r.customer_id, r.expiration, r.time, p.price, p.name_plan, c.balance FROM tbl_user_recharges r JOIN tbl_customers c ON c.id = r.customer_id JOIN tbl_plans p ON p.id = r.plan_id
+        WHERE c.auto_renewal = 1 AND r.status = 'on' AND CONCAT(r.expiration, ' ', r.time) BETWEEN ? AND ? LIMIT 200", [date('Y-m-d H:i:s'), $until]) as $x) {
+        if ((float) $x['balance'] >= (float) $x['price']) continue;
+        $key = 'arw_' . $x['rid'] . '_' . $x['expiration'];
+        if (mobile_api_setting($key) !== null) continue;
+        mobile_api_setting_set($key, 1);
+        mobile_api_notify(-(int) $x['customer_id'], 'renew', 'Top up so your plan renews',
+            'Your ' . $x['name_plan'] . ' ends on ' . date('j M H:i', strtotime($x['expiration'] . ' ' . $x['time'])) . '. Your wallet is ' . mobile_api_money($x['balance']) . ' and the plan costs ' . mobile_api_money($x['price']) . '.', 'wallet', (int) $x['customer_id']);
+    }
+    ORM::get_db()->prepare("DELETE FROM tbl_mobile_settings WHERE k LIKE 'arw\\_%' AND k NOT IN (SELECT k FROM (SELECT k FROM tbl_mobile_settings WHERE k LIKE 'arw\\_%' ORDER BY k DESC LIMIT 2000) t)")->execute();
+}
+
+/* ------------------------------------------------------------------ */
+/* coverage check                                                      */
+/* ------------------------------------------------------------------ */
+
+/** The nearest splitters (ODP) to a spot, with free ports where the splitter size is known. */
+function mobile_api_coverage_eval($lat, $lng)
+{
+    $near = max(20, (int) mobile_api_setting('cov_near_m', 150));
+    $far = max($near, (int) mobile_api_setting('cov_far_m', 500));
+    $used = [];
+    foreach (mobile_api_rows('SELECT asset_id, COUNT(*) n FROM tbl_mobile_onu_feed GROUP BY asset_id') as $u) $used[(int) $u['asset_id']] = (int) $u['n'];
+    $list = [];
+    foreach (mobile_api_rows("SELECT a.id, a.name, a.coordinates, n.split FROM tbl_ftth_assets a LEFT JOIN tbl_mobile_net n ON n.asset_id = a.id WHERE a.type = 'odp'") as $a) {
+        list($la, $ln) = mobile_api_netmap_latlng($a['coordinates']);
+        if ($la === null) continue;
+        $cap = preg_match('/:\s*(\d+)/', (string) $a['split'], $m) ? (int) $m[1] : null;
+        $u = isset($used[(int) $a['id']]) ? $used[(int) $a['id']] : 0;
+        $list[] = ['id' => (int) $a['id'], 'name' => $a['name'], 'distance_m' => (int) round(mobile_api_haversine($lat, $lng, $la, $ln)), 'capacity' => $cap, 'used' => $u,
+            'free' => $cap === null ? null : max(0, $cap - $u), 'lat' => $la, 'lng' => $ln];
+    }
+    usort($list, function ($a, $b) { return $a['distance_m'] <=> $b['distance_m']; });
+    $level = 'none';
+    $best = null;
+    foreach ($list as $o) {
+        if ($o['distance_m'] <= $near && ($o['free'] === null || $o['free'] > 0)) { $level = 'covered'; $best = $o; break; }
+    }
+    if ($level === 'none' && $list) {
+        if ($list[0]['distance_m'] <= $near) $level = 'full';
+        elseif ($list[0]['distance_m'] <= $far) $level = 'extension';
+    }
+    return [$level, array_slice($list, 0, 3), $best, $near, $far];
+}
+
+function mobile_api_coverage_geocode_raw($q)
+{
+    if (!function_exists('curl_init')) return null;
+    $cc = trim((string) mobile_api_setting('cov_country', 'ke'));
+    $url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' . rawurlencode($q) . ($cc !== '' ? '&countrycodes=' . rawurlencode($cc) : '');
+    $base = (string) mobile_api_setting('cov_geocode_base', '');
+    if ($base !== '') $url = rtrim($base, '/') . '/search?format=json&limit=5&q=' . rawurlencode($q);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 8, CURLOPT_CONNECTTIMEOUT => 4, CURLOPT_USERAGENT => 'EazyradiusCRM/1.0 (coverage check)']);
+    $res = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($res === false || $code !== 200) return null;
+    $j = json_decode($res, true);
+    if (!is_array($j)) return null;
+    $out = [];
+    foreach ($j as $r) {
+        if (isset($r['lat'], $r['lon'])) $out[] = ['name' => (string) (isset($r['display_name']) ? $r['display_name'] : ''), 'lat' => (float) $r['lat'], 'lng' => (float) $r['lon']];
+    }
+    return $out;
+}
+
+function mobile_api_coverage_geocode()
+{
+    $q = trim((string) mobile_api_in('q'));
+    if (mb_strlen($q) < 3) mobile_api_fail('Type at least 3 letters of the address', 422);
+    $r = mobile_api_coverage_geocode_raw($q);
+    if ($r === null) mobile_api_fail('The address search is not available right now. Use the phone location instead.', 502);
+    mobile_api_out(['ok' => true, 'places' => $r]);
+}
+
+function mobile_api_coverage_point()
+{
+    $lat = mobile_api_in('lat');
+    $lng = mobile_api_in('lng');
+    if (!is_numeric($lat) || !is_numeric($lng) || abs((float) $lat) > 90 || abs((float) $lng) > 180) mobile_api_fail('Give a location (latitude and longitude)', 422);
+    return [(float) $lat, (float) $lng];
+}
+
+function mobile_api_coverage_check()
+{
+    list($lat, $lng) = mobile_api_coverage_point();
+    list($level, $near3, $best, $near, $far) = mobile_api_coverage_eval($lat, $lng);
+    $msg = ['covered' => 'Covered. Fibre is within reach and a port is free.', 'full' => 'Fibre is right here but the nearest splitter is full. A new splitter or an extension is needed.',
+        'extension' => 'Close to the network. A site survey and some extra cable are needed.', 'none' => 'Not covered yet. No splitter is within ' . $far . ' m.'][$level];
+    mobile_api_out(['ok' => true, 'level' => $level, 'message' => $msg, 'near' => $near3, 'limits' => ['covered_m' => $near, 'extension_m' => $far]]);
+}
+
+/** For people who are not customers yet. Answers only yes/near/no and keeps network details private. */
+function mobile_api_coverage_public()
+{
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '0';
+    $key = 'covrl_' . substr(md5($ip), 0, 12) . '_' . date('YmdH');
+    $n = (int) mobile_api_setting($key, 0);
+    if ($n >= 20) mobile_api_fail('Too many checks. Please try again in an hour.', 429);
+    mobile_api_setting_set($key, $n + 1);
+    ORM::get_db()->prepare("DELETE FROM tbl_mobile_settings WHERE k LIKE 'covrl\\_%' AND k NOT LIKE ?")->execute(['covrl\\_%\\_' . date('YmdH')]);
+    $place = '';
+    if (mobile_api_in('q') !== '' && !is_numeric(mobile_api_in('lat'))) {
+        $q = trim((string) mobile_api_in('q'));
+        if (mb_strlen($q) < 3) mobile_api_fail('Type your estate or street', 422);
+        $g = mobile_api_coverage_geocode_raw($q);
+        if (!$g) mobile_api_fail('We could not find that place. Try a nearby landmark, or use your phone location.', 404);
+        $_POST['lat'] = $g[0]['lat'];
+        $_POST['lng'] = $g[0]['lng'];
+        $place = $g[0]['name'];
+    }
+    list($lat, $lng) = mobile_api_coverage_point();
+    list($level, $near3, $best, $near, $far) = mobile_api_coverage_eval($lat, $lng);
+    $msg = ['covered' => 'Good news, we have fibre at your location. Contact us to book an installation.',
+        'full' => 'We have fibre right next to you and are adding capacity. Contact us and we will tell you when it is ready.',
+        'extension' => 'We are close to you. Contact us for a site survey.', 'none' => 'We do not cover this location yet.'][$level];
+    mobile_api_out(['ok' => true, 'level' => $level, 'message' => $msg, 'place' => $place]);
+}
+
+/* ------------------------------------------------------------------ */
+/* family and shared access: one account sees and pays for others       */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_phone_tail($p)
+{
+    $d = preg_replace('/\D+/', '', (string) $p);
+    return strlen($d) >= 9 ? substr($d, -9) : '';
+}
+
+function mobile_api_family_plan_line($cid)
+{
+    $r = mobile_api_active_recharge((int) $cid);
+    $pause = mobile_api_pause_active((int) $cid);
+    return ['plan' => $r ? $r['namebp'] : '', 'expires' => $r ? trim($r['expiration'] . ' ' . $r['time']) : '', 'active' => $r ? $r['status'] === 'on' : false, 'paused' => (bool) $pause];
+}
+
+function mobile_api_client_family($s)
+{
+    $me = (int) $s['user_id'];
+    $mine = [];
+    foreach (mobile_api_rows("SELECT f.id, f.status, c.id cid, c.fullname, c.username FROM tbl_mobile_family f JOIN tbl_customers c ON c.id = f.member_id WHERE f.owner_id = ? AND f.status IN ('pending','active') ORDER BY f.id", [$me]) as $f) {
+        $mine[] = ['link_id' => (int) $f['id'], 'customer_id' => (int) $f['cid'], 'name' => $f['fullname'] ?: $f['username'], 'username' => $f['username'], 'status' => $f['status']]
+            + ($f['status'] === 'active' ? mobile_api_family_plan_line($f['cid']) : []);
+    }
+    $of = [];
+    $req = [];
+    foreach (mobile_api_rows("SELECT f.id, f.status, c.fullname, c.username FROM tbl_mobile_family f JOIN tbl_customers c ON c.id = f.owner_id WHERE f.member_id = ? AND f.status IN ('pending','active') ORDER BY f.id", [$me]) as $f) {
+        $row = ['link_id' => (int) $f['id'], 'name' => $f['fullname'] ?: $f['username']];
+        if ($f['status'] === 'pending') $req[] = $row; else $of[] = $row;
+    }
+    mobile_api_out(['ok' => true, 'members' => $mine, 'managed_by' => $of, 'requests' => $req]);
+}
+
+function mobile_api_client_family_add($s)
+{
+    $me = (int) $s['user_id'];
+    $u = trim((string) mobile_api_in('username'));
+    $tail = mobile_api_phone_tail(mobile_api_in('phone'));
+    if ($u === '' || $tail === '') mobile_api_fail('Enter the other account\'s username and phone number', 422);
+    $recent = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_family WHERE owner_id = ? AND created_at > ?", [$me, date('Y-m-d H:i:s', time() - 3600)]);
+    if ((int) $recent[0]['n'] >= 5) mobile_api_fail('Too many requests. Please try again later.', 429);
+    $m = mobile_api_rows('SELECT id, fullname, username, phonenumber FROM tbl_customers WHERE username = ?', [$u]);
+    if (!$m || mobile_api_phone_tail($m[0]['phonenumber']) !== $tail) mobile_api_fail('No account matches that username and phone number', 404);
+    $mid = (int) $m[0]['id'];
+    if ($mid === $me) mobile_api_fail('That is your own account', 422);
+    $n = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_family WHERE owner_id = ? AND status IN ('pending','active')", [$me]);
+    if ((int) $n[0]['n'] >= 5) mobile_api_fail('You can link up to 5 accounts', 422);
+    $ex = mobile_api_rows('SELECT id, status FROM tbl_mobile_family WHERE owner_id = ? AND member_id = ?', [$me, $mid]);
+    if ($ex && in_array($ex[0]['status'], ['pending', 'active'], true)) mobile_api_fail($ex[0]['status'] === 'active' ? 'That account is already linked' : 'A request is already waiting for them to approve', 409);
+    $now = date('Y-m-d H:i:s');
+    $db = ORM::get_db();
+    if ($ex) $db->prepare("UPDATE tbl_mobile_family SET status = 'pending', created_at = ?, answered_at = NULL WHERE id = ?")->execute([$now, (int) $ex[0]['id']]);
+    else $db->prepare("INSERT INTO tbl_mobile_family (owner_id, member_id, status, created_at) VALUES (?,?,'pending',?)")->execute([$me, $mid, $now]);
+    $owner = ORM::for_table('tbl_customers')->find_one($me);
+    mobile_api_notify(-$mid, 'family', 'Request to link accounts', ($owner['fullname'] ?: $owner['username']) . ' wants to see and pay for your internet. Open Linked accounts to approve or decline.', 'family', $me);
+    mobile_api_out(['ok' => true, 'message' => 'Request sent. It becomes active when they approve it in their app.']);
+}
+
+function mobile_api_client_family_respond($s)
+{
+    $me = (int) $s['user_id'];
+    $f = mobile_api_rows("SELECT * FROM tbl_mobile_family WHERE id = ? AND member_id = ? AND status = 'pending'", [(int) mobile_api_in('id'), $me]);
+    if (!$f) mobile_api_fail('Request not found', 404);
+    $yes = (string) mobile_api_in('accept') === '1';
+    ORM::get_db()->prepare('UPDATE tbl_mobile_family SET status = ?, answered_at = ? WHERE id = ?')->execute([$yes ? 'active' : 'declined', date('Y-m-d H:i:s'), (int) $f[0]['id']]);
+    $c = ORM::for_table('tbl_customers')->find_one($me);
+    mobile_api_notify(-(int) $f[0]['owner_id'], 'family', $yes ? 'Account linked' : 'Link declined', ($c['fullname'] ?: $c['username']) . ($yes ? ' approved your request. You can now see and pay for their internet.' : ' declined your request.'), 'family', $me);
+    mobile_api_out(['ok' => true, 'message' => $yes ? 'Approved. They can now see your plan and pay for it.' : 'Declined']);
+}
+
+function mobile_api_client_family_remove($s)
+{
+    $me = (int) $s['user_id'];
+    $f = mobile_api_rows("SELECT * FROM tbl_mobile_family WHERE id = ? AND (owner_id = ? OR member_id = ?) AND status IN ('pending','active')", [(int) mobile_api_in('id'), $me, $me]);
+    if (!$f) mobile_api_fail('Link not found', 404);
+    ORM::get_db()->prepare("UPDATE tbl_mobile_family SET status = 'removed', answered_at = ? WHERE id = ?")->execute([date('Y-m-d H:i:s'), (int) $f[0]['id']]);
+    $other = (int) $f[0]['owner_id'] === $me ? (int) $f[0]['member_id'] : (int) $f[0]['owner_id'];
+    $c = ORM::for_table('tbl_customers')->find_one($me);
+    mobile_api_notify(-$other, 'family', 'Account link removed', ($c['fullname'] ?: $c['username']) . ' removed the link between your accounts.', 'family', $me);
+    mobile_api_out(['ok' => true, 'message' => 'Link removed']);
+}
+
+/** The member's customer row, but only when the signed-in customer is an approved owner of that account. */
+function mobile_api_family_target($owner, $memberId)
+{
+    $f = mobile_api_rows("SELECT id FROM tbl_mobile_family WHERE owner_id = ? AND member_id = ? AND status = 'active'", [(int) $owner['id'], (int) $memberId]);
+    if (!$f) mobile_api_fail('That account is not linked to you', 403);
+    $m = ORM::for_table('tbl_customers')->find_one((int) $memberId);
+    if (!$m) mobile_api_fail('Account not found', 404);
+    return $m;
+}
+
+function mobile_api_client_family_member($s)
+{
+    $owner = mobile_api_client_row($s);
+    $m = mobile_api_family_target($owner, (int) mobile_api_in('member_id'));
+    $plans = [];
+    foreach (ORM::for_table('tbl_plans')->where('enabled', 1)->order_by_asc('price')->find_many() as $p) {
+        if ($m['service_type'] === 'PPPoE' && $p['type'] !== 'PPPOE' && $p['type'] !== 'PPPoE') continue;
+        if ($m['service_type'] === 'Hotspot' && $p['type'] !== 'Hotspot') continue;
+        $plans[] = ['id' => (int) $p['id'], 'name' => $p['name_plan'], 'price' => mobile_api_money($p['price']), 'validity' => $p['validity'] . ' ' . $p['validity_unit']];
+    }
+    mobile_api_out(['ok' => true, 'member' => ['id' => (int) $m['id'], 'name' => $m['fullname'] ?: $m['username'], 'username' => $m['username']] + mobile_api_family_plan_line($m['id']),
+        'plans' => $plans, 'balance' => mobile_api_money($owner['balance'])]);
+}
+
+function mobile_api_client_family_buy($s)
+{
+    $owner = mobile_api_client_row($s);
+    $m = mobile_api_family_target($owner, (int) mobile_api_in('member_id'));
+    $plan = ORM::for_table('tbl_plans')->where('enabled', 1)->find_one((int) mobile_api_in('plan_id'));
+    if (!$plan) mobile_api_fail('Plan not found', 404);
+    $price = (float) $plan['price'];
+    if ((float) $owner['balance'] < $price) mobile_api_fail('Not enough balance in your wallet. Top up first.', 402);
+    if (!class_exists('Package') || !method_exists('Package', 'rechargeUser')) mobile_api_fail('Purchasing is not available in this version', 500);
+    $old = $owner['balance'];
+    $owner->balance = $old - $price;
+    $owner->save();
+    try {
+        Package::rechargeUser($m['id'], $plan['routers'], $plan['id'], 'Customer', 'Balance (paid by ' . $owner['username'] . ')');
+    } catch (Throwable $e) {
+        $owner->balance = $old;
+        $owner->save();
+        mobile_api_fail('Could not activate the plan: ' . $e->getMessage(), 500);
+    }
+    mobile_api_notify(-(int) $m['id'], 'family', 'Your plan was renewed', ($owner['fullname'] ?: $owner['username']) . ' paid for ' . $plan['name_plan'] . ' on your account.', 'family', (int) $owner['id']);
+    mobile_api_out(['ok' => true, 'message' => $plan['name_plan'] . ' activated for ' . ($m['fullname'] ?: $m['username'])]);
 }

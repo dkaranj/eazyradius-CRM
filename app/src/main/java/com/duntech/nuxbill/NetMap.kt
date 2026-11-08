@@ -324,6 +324,7 @@ private fun AssetDialog(
                 KeyValue("Cores", a.optString("cores"))
                 KeyValue("Length", if (a.isNull("length_m")) "" else a.optInt("length_m").toString() + " m")
                 KeyValue("Splitter", a.optString("split"))
+                if (!a.isNull("capacity")) KeyValue("Ports", (a.optInt("capacity") - a.optInt("own")).coerceAtLeast(0).toString() + " free of " + a.optInt("capacity"))
                 if (a.optString("note").isNotBlank()) KeyValue("Note", a.optString("note"))
                 if (children.isNotEmpty()) {
                     Text("Feeds", style = MaterialTheme.typography.titleSmall)

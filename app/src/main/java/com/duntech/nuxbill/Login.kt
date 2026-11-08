@@ -36,6 +36,7 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
     var pass by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
+    var showCoverage by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
@@ -100,7 +101,16 @@ fun LoginScreen(onLoggedIn: (Auth) -> Unit) {
             if (busy) CircularProgressIndicator(Modifier.height(20.dp), strokeWidth = 2.dp) else Text("Sign in")
         }
         Spacer(Modifier.height(8.dp))
+        TextButton(onClick = {
+            var b = url.trim().trimEnd('/')
+            if (b.isEmpty()) { error = "Enter the server address first"; return@TextButton }
+            if (!b.startsWith("http://") && !b.startsWith("https://")) b = "https://" + b
+            Api.base = b
+            Api.token = ""
+            showCoverage = true
+        }) { Text("Do you cover my area?") }
         TextButton(onClick = { showTheme = true }) { Text("Theme and colours") }
     }
+    if (showCoverage) PublicCoverageDialog(url) { showCoverage = false }
     if (showTheme) ThemeDialog { showTheme = false }
 }

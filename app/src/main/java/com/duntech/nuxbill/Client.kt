@@ -43,6 +43,8 @@ fun ClientHome(reload: Int) {
     var showStk by remember { mutableStateOf(false) }
     var showWifi by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
+    var showPause by remember { mutableStateOf(false) }
+    var showFamily by remember { mutableStateOf(false) }
     var phoneNo by remember { mutableStateOf("") }
     Remote(listOf(reload, homeBump), load = { Api.call("client_home") }) { j ->
         val c = j.getJSONObject("client")
@@ -54,12 +56,19 @@ fun ClientHome(reload: Int) {
         ) {
             Text("Hello, " + c.optString("name"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             NoticeBanner(reload)
+            val pause = c.optJSONObject("pause")
+            if (pause != null && pause.optBoolean("active")) PausedBanner(pause) { homeBump++ }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { showStk = true }, modifier = Modifier.weight(1f)) { Text("Top up (M-Pesa)") }
                 OutlinedButton(onClick = { showWifi = true }, modifier = Modifier.weight(1f)) { Text("My Wi-Fi") }
             }
             OutlinedButton(onClick = { showRewards = true }, modifier = Modifier.fillMaxWidth()) { Text("Rewards and referrals") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (plan != null) OutlinedButton(onClick = { showPause = true }, modifier = Modifier.weight(1f)) { Text("Pause my plan") }
+                OutlinedButton(onClick = { showFamily = true }, modifier = Modifier.weight(1f)) { Text("Linked accounts") }
+            }
             StatCard("Wallet balance", c.optString("balance"), "info", Modifier.fillMaxWidth())
+            c.optJSONObject("auto_renew")?.let { AutoRenewRow(it) { homeBump++ } }
             if (plan != null) {
                 val active = plan.optBoolean("active")
                 StatCard(
@@ -86,6 +95,8 @@ fun ClientHome(reload: Int) {
     if (showStk) StkDialog(phoneNo) { showStk = false; homeBump++ }
     if (showWifi) WifiDialog { showWifi = false }
     if (showRewards) RewardsDialog { showRewards = false; homeBump++ }
+    if (showPause) PauseDialog(onClose = { showPause = false }, onChanged = { homeBump++ })
+    if (showFamily) FamilyDialog(onClose = { showFamily = false }, onChanged = { homeBump++ })
 }
 
 @Composable
