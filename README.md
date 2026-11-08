@@ -152,3 +152,12 @@ Re-upload `server/system/plugin/mobile_api.php`, tick **Loyalty points and refer
 **Coverage check**: *Coverage* tab (module "Coverage check") for sales and technicians: search an address (OpenStreetMap search) or use the phone's position, and see COVERED, SPLITTER FULL, NEEDS EXTENSION or NOT COVERED with the nearest splitters (ODPs on the Fibre map), their distance and free ports (from the splitter size and the ONUs placed on it). Defaults: covered within 150 m, extension up to 500 m (settings `cov_near_m`, `cov_far_m`; address search country `cov_country`, default `ke`). The sign-in screen also has *Do you cover my area?* for people without an account: it answers only yes, near or no (20 checks per hour per address) and reveals nothing about the network.
 
 Re-upload `server/system/plugin/mobile_api.php`, tick **Subscription pauses** and **Coverage check** on the Access screen for the people who need them.
+
+## Live chat (app pop-up + website plugin)
+
+Customers talk to customer care from a chat bubble in the corner of the app, or on the website. Both share the same conversations, so a chat started on the website can be answered from the app inbox and the other way round.
+
+- **App, customers:** a "Chat with us" bubble on every customer screen opens a small chat window (unread badge, End chat, 1-5 rating afterwards).
+- **App, staff:** new **Chat** tab (module `chat`, tick it on the Access screen): Open / Mine / New / Closed, take or release a chat, quick replies, close. Managers can edit the settings (on/off, welcome text, support hours, away message, quick replies, auto-close hours).
+- **Website:** copy `server/system/plugin/livechat.php` to `system/plugin/` and `server/system/plugin/ui/livechat.tpl` to `system/plugin/ui/`. Staff answer from **Services > Live chat**. The pop-up is added automatically to the customer portal and login page; logged-in customers chat as themselves, visitors enter a name first (switch this off in Settings). Tables are created on first use; `mobile_api.php` is optional but when present, website chats also notify the app.
+- Idle chats close after 24 hours (adjustable). Rate limits apply per customer, visitor and network.

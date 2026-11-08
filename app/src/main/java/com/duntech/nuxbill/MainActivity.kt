@@ -190,6 +190,7 @@ private fun staffTabs(a: Auth): List<NavTab> {
     if ("loyalty" in m) out.add(NavTab("loyalty", "Rewards"))
     if ("pause" in m) out.add(NavTab("pause", "Pauses"))
     if ("coverage" in m) out.add(NavTab("coverage", "Coverage"))
+    if ("chat" in m) out.add(NavTab("chat", "Chat"))
     if ("onu" in m) out.add(NavTab("onu", "ONUs"))
     if ("netmap" in m) out.add(NavTab("netmap", "Fibre map"))
     if ("usage" in m) out.add(NavTab("usage", "Usage"))
@@ -344,6 +345,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                 "loyalty" -> LoyaltyScreen(reload)
                 "pause" -> PausesScreen(reload)
                 "coverage" -> CoverageScreen(reload)
+                "chat" -> ChatInboxScreen(reload)
                 "my_hr" -> MyHr(reload)
                 "hr_employees" -> HrEmployees(reload)
                 "hr_attendance" -> HrAttendance(reload)
@@ -352,6 +354,7 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
                 "users" -> AdminUsers(reload)
                 "access" -> AdminAccess(reload)
             }
+            if (tabs[idx].key.startsWith("c_")) ClientChatPopup()
           }
         }
     }

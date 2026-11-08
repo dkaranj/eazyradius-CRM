@@ -299,6 +299,35 @@ function mobile_api()
                 mobile_api_client_only($s);
                 mobile_api_client_family_buy($s);
 
+            // ---- live chat ----
+            case 'client_chat':
+                mobile_api_client_only($s);
+                mobile_api_client_chat($s);
+            case 'client_chat_send':
+                mobile_api_client_only($s);
+                mobile_api_client_chat_send($s);
+            case 'client_chat_close':
+                mobile_api_client_only($s);
+                mobile_api_client_chat_close($s);
+            case 'chat_list':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_list($s);
+            case 'chat_thread':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_thread($s);
+            case 'chat_send':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_send($s);
+            case 'chat_assign':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_assign($s);
+            case 'chat_close':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_close($s);
+            case 'chat_settings_save':
+                mobile_api_mod($s, 'chat');
+                mobile_api_chat_settings_save($s);
+
             // ---- pauses and coverage (staff) ----
             case 'pause_overview':
                 mobile_api_mod($s, 'pause');
@@ -581,7 +610,7 @@ function mobile_api_boot()
             ['k', 'v'],
             "CREATE TABLE IF NOT EXISTS tbl_mobile_settings (
                 k VARCHAR(40) NOT NULL PRIMARY KEY,
-                v VARCHAR(200) NOT NULL
+                v TEXT NOT NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_loyalty' => [
@@ -688,6 +717,45 @@ function mobile_api_boot()
                 answered_at DATETIME NULL,
                 UNIQUE KEY uq_pair (owner_id, member_id),
                 KEY idx_member (member_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_chat' => [
+            ['customer_id', 'guest_name', 'guest_contact', 'guest_token', 'source', 'status', 'assigned_to', 'assigned_name', 'last_msg_at', 'last_sender', 'last_preview', 'staff_unread', 'client_unread', 'rating', 'created_at', 'closed_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_chat (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT NOT NULL DEFAULT 0,
+                guest_name VARCHAR(80) NULL,
+                guest_contact VARCHAR(80) NULL,
+                guest_token VARCHAR(64) NULL,
+                source VARCHAR(10) NOT NULL DEFAULT 'app',
+                status VARCHAR(10) NOT NULL DEFAULT 'open',
+                assigned_to INT NOT NULL DEFAULT 0,
+                assigned_name VARCHAR(100) NULL,
+                last_msg_at DATETIME NOT NULL,
+                last_sender VARCHAR(10) NULL,
+                last_preview VARCHAR(160) NULL,
+                staff_unread INT NOT NULL DEFAULT 0,
+                client_unread INT NOT NULL DEFAULT 0,
+                rating TINYINT NULL,
+                created_at DATETIME NOT NULL,
+                closed_at DATETIME NULL,
+                KEY idx_cust (customer_id, status),
+                KEY idx_status (status, last_msg_at),
+                KEY idx_guest (guest_token)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        ],
+        'tbl_mobile_chat_msg' => [
+            ['chat_id', 'sender', 'sender_id', 'sender_name', 'body', 'source', 'created_at'],
+            "CREATE TABLE IF NOT EXISTS tbl_mobile_chat_msg (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                chat_id INT NOT NULL,
+                sender VARCHAR(10) NOT NULL,
+                sender_id INT NOT NULL DEFAULT 0,
+                sender_name VARCHAR(100) NULL,
+                body VARCHAR(1000) NOT NULL,
+                source VARCHAR(10) NOT NULL DEFAULT 'app',
+                created_at DATETIME NOT NULL,
+                KEY idx_chat (chat_id, id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ],
         'tbl_mobile_notices' => [
@@ -1764,6 +1832,7 @@ function mobile_api_client_home($s)
         'plan' => $plan,
         'pause' => mobile_api_pause_home((int) $c['id']),
         'auto_renew' => mobile_api_autorenew_home($c, $r),
+        'chat' => mobile_api_chat_home((int) $c['id']),
     ]]);
 }
 
@@ -2148,6 +2217,7 @@ function mobile_api_catalog()
         ['key' => 'onu', 'label' => 'ONU monitoring', 'group' => 'Network'],
         ['key' => 'netmap', 'label' => 'Fibre and splitter map', 'group' => 'Network'],
         ['key' => 'coverage', 'label' => 'Coverage check', 'group' => 'Operations'],
+        ['key' => 'chat', 'label' => 'Live chat with customers', 'group' => 'Operations'],
         ['key' => 'usage', 'label' => 'Data usage and FUP', 'group' => 'Network'],
         ['key' => 'notices', 'label' => 'Outage notices to customers', 'group' => 'Network'],
         ['key' => 'activation', 'label' => 'Manual activation (outage)', 'group' => 'Network'],
@@ -2192,7 +2262,7 @@ function mobile_api_role_derived($id)
         $p = (string) $p;
         if (strpos($p, 'leads.') === 0) $mods[] = 'leads';
         if (strpos($p, 'installations.') === 0 || strpos($p, 'jobs.') === 0) $mods[] = 'installations';
-        if (strpos($p, 'tickets.') === 0 || strpos($p, 'support.') === 0) $mods[] = 'support';
+        if (strpos($p, 'tickets.') === 0 || strpos($p, 'support.') === 0) { $mods[] = 'support'; $mods[] = 'chat'; }
         if (strpos($p, 'customers.') === 0) $mods[] = 'customers';
         if (strpos($p, 'network.') === 0) $mods[] = 'onu';
         if ($p === 'installations.work' || $p === 'jobs.update') $field = true;
@@ -2881,6 +2951,7 @@ function mobile_api_audited()
         'loyalty_referrer_set' => 'referrer_set', 'activation_apply' => 'manual_activation',
         'client_pause_start' => 'pause', 'client_pause_resume' => 'pause_resume', 'pause_staff_start' => 'pause_staff', 'pause_staff_resume' => 'pause_staff_resume', 'pause_settings_save' => 'pause_settings',
         'client_autorenew_set' => 'autorenew', 'client_family_add' => 'family_add', 'client_family_respond' => 'family_answer', 'client_family_remove' => 'family_remove', 'client_family_buy' => 'family_buy',
+        'chat_assign' => 'chat_assign', 'chat_close' => 'chat_close', 'chat_settings_save' => 'chat_settings', 'client_chat_close' => 'chat_close_client',
         'netmap_asset_save' => 'netmap_save', 'netmap_asset_delete' => 'netmap_delete', 'netmap_onu_place' => 'netmap_onu',
     ];
 }
@@ -5748,7 +5819,7 @@ function mobile_api_housekeeping()
     $last = (int) mobile_api_setting('hk_last', 0);
     if (time() - $last < 45) return;
     mobile_api_setting_set('hk_last', time());
-    foreach (['mobile_api_loyalty_sync', 'mobile_api_pause_sync', 'mobile_api_autorenew_warn'] as $fn) {
+    foreach (['mobile_api_loyalty_sync', 'mobile_api_pause_sync', 'mobile_api_autorenew_warn', 'mobile_api_chat_sweep'] as $fn) {
         try {
             $fn();
         } catch (Throwable $e) {
@@ -6274,4 +6345,264 @@ function mobile_api_client_family_buy($s)
     }
     mobile_api_notify(-(int) $m['id'], 'family', 'Your plan was renewed', ($owner['fullname'] ?: $owner['username']) . ' paid for ' . $plan['name_plan'] . ' on your account.', 'family', (int) $owner['id']);
     mobile_api_out(['ok' => true, 'message' => $plan['name_plan'] . ' activated for ' . ($m['fullname'] ?: $m['username'])]);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* live chat: customers (app or website) talk to customer care          */
+/* Shared with the website plugin livechat.php: same two tables.        */
+/* ------------------------------------------------------------------ */
+
+function mobile_api_chat_cfg()
+{
+    return [
+        'on' => (int) mobile_api_setting('chat_on', 1) === 1,
+        'welcome' => (string) (mobile_api_setting('chat_welcome', '') ?: 'Hi! How can we help you today? A member of our team will reply shortly.'),
+        'hours' => (string) mobile_api_setting('chat_hours', ''),
+        'offline' => (string) (mobile_api_setting('chat_offline', '') ?: 'We are away at the moment. Leave your message and we will reply as soon as we are back.'),
+        'canned' => (string) mobile_api_setting('chat_canned', "Thanks for contacting us, one moment please.\nCould you share your username or phone number?\nIs there anything else I can help you with?"),
+        'close_hours' => max(1, (int) mobile_api_setting('chat_close_hours', 24)),
+    ];
+}
+
+/** Is any staff member with chat access active recently (used only to pick the welcome wording). */
+function mobile_api_chat_staff_recent()
+{
+    $r = mobile_api_safe(function () {
+        return mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_chat_msg WHERE sender = 'staff' AND created_at > ?", [date('Y-m-d H:i:s', time() - 1800)]);
+    }, []);
+    return $r && (int) $r[0]['n'] > 0;
+}
+
+function mobile_api_chat_add($chatId, $sender, $senderId, $name, $body, $source)
+{
+    $now = date('Y-m-d H:i:s');
+    ORM::get_db()->prepare('INSERT INTO tbl_mobile_chat_msg (chat_id, sender, sender_id, sender_name, body, source, created_at) VALUES (?,?,?,?,?,?,?)')
+        ->execute([(int) $chatId, $sender, (int) $senderId, mb_substr((string) $name, 0, 100), $body, $source, $now]);
+    return (int) ORM::get_db()->lastInsertId();
+}
+
+function mobile_api_chat_clean($v)
+{
+    $v = trim(preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', (string) $v));
+    return mb_substr($v, 0, 1000);
+}
+
+function mobile_api_chat_msgs($chatId, $after)
+{
+    $out = [];
+    foreach (mobile_api_rows('SELECT id, sender, sender_name, body, created_at FROM tbl_mobile_chat_msg WHERE chat_id = ? AND id > ? ORDER BY id LIMIT 200', [(int) $chatId, (int) $after]) as $m) {
+        $out[] = ['id' => (int) $m['id'], 'sender' => $m['sender'], 'name' => (string) $m['sender_name'], 'body' => $m['body'], 'at' => $m['created_at']];
+    }
+    return $out;
+}
+
+function mobile_api_chat_mine($cid)
+{
+    $r = mobile_api_rows("SELECT * FROM tbl_mobile_chat WHERE customer_id = ? AND (status = 'open' OR (rating IS NULL AND closed_at > ?)) ORDER BY id DESC LIMIT 1", [(int) $cid, date('Y-m-d H:i:s', time() - 86400)]);
+    return $r ? $r[0] : null;
+}
+
+function mobile_api_client_chat($s)
+{
+    $cid = (int) $s['user_id'];
+    $cfg = mobile_api_chat_cfg();
+    $chat = mobile_api_chat_mine($cid);
+    $out = ['ok' => true, 'enabled' => $cfg['on'], 'welcome' => $cfg['welcome'], 'hours' => $cfg['hours'], 'chat' => null, 'messages' => []];
+    if ($chat) {
+        $out['chat'] = ['id' => (int) $chat['id'], 'status' => $chat['status'], 'agent' => (string) $chat['assigned_name'], 'rated' => $chat['rating'] !== null];
+        $out['messages'] = mobile_api_chat_msgs($chat['id'], (int) mobile_api_in('after', 0));
+        $out['unread'] = (int) $chat['client_unread'];
+        if ((int) $chat['client_unread'] > 0) {
+            ORM::get_db()->prepare('UPDATE tbl_mobile_chat SET client_unread = 0 WHERE id = ?')->execute([(int) $chat['id']]);
+        }
+    }
+    mobile_api_out($out);
+}
+
+function mobile_api_client_chat_send($s)
+{
+    $cid = (int) $s['user_id'];
+    $cfg = mobile_api_chat_cfg();
+    if (!$cfg['on']) mobile_api_fail('Live chat is switched off right now', 403);
+    $body = mobile_api_chat_clean(mobile_api_in('body'));
+    if ($body === '') mobile_api_fail('Type a message first', 422);
+    $db = ORM::get_db();
+    $recent = mobile_api_rows("SELECT COUNT(*) n FROM tbl_mobile_chat_msg m JOIN tbl_mobile_chat c ON c.id = m.chat_id WHERE c.customer_id = ? AND m.sender = 'client' AND m.created_at > ?", [$cid, date('Y-m-d H:i:s', time() - 60)]);
+    if ((int) $recent[0]['n'] >= 15) mobile_api_fail('You are sending messages too fast. Please wait a moment.', 429);
+    $c = mobile_api_rows('SELECT fullname, username FROM tbl_customers WHERE id = ?', [$cid]);
+    $name = $c ? ($c[0]['fullname'] ?: $c[0]['username']) : 'Customer';
+    $now = date('Y-m-d H:i:s');
+    $chat = mobile_api_chat_mine($cid);
+    if ($chat && $chat['status'] !== 'open') $chat = null; // a closed chat awaiting a rating does not take new messages
+    $isNew = false;
+    if (!$chat) {
+        $db->prepare("INSERT INTO tbl_mobile_chat (customer_id, source, status, last_msg_at, created_at) VALUES (?, 'app', 'open', ?, ?)")->execute([$cid, $now, $now]);
+        $chat = ['id' => (int) $db->lastInsertId(), 'assigned_to' => 0, 'staff_unread' => 0];
+        $isNew = true;
+    }
+    $chatId = (int) $chat['id'];
+    $before = (int) $chat['staff_unread'];
+    mobile_api_chat_add($chatId, 'client', $cid, $name, $body, 'app');
+    if ($isNew && $cfg['hours'] !== '' && !mobile_api_chat_staff_recent()) {
+        mobile_api_chat_add($chatId, 'system', 0, 'Customer care', $cfg['offline'], 'app');
+    }
+    $db->prepare("UPDATE tbl_mobile_chat SET last_msg_at = ?, last_sender = 'client', last_preview = ?, staff_unread = staff_unread + 1, status = 'open' WHERE id = ?")
+        ->execute([$now, mb_substr($body, 0, 160), $chatId]);
+    if ($before === 0) {
+        if ((int) $chat['assigned_to'] > 0) {
+            mobile_api_notify((int) $chat['assigned_to'], 'chat', 'Chat: ' . $name, $body, 'chat', $chatId);
+        } else {
+            mobile_api_notify_managers('chat', false, 'chat', 'New chat: ' . $name, $body, 'chat', $chatId, 0);
+        }
+    }
+    mobile_api_out(['ok' => true, 'chat_id' => $chatId, 'messages' => mobile_api_chat_msgs($chatId, (int) mobile_api_in('after', 0))]);
+}
+
+function mobile_api_client_chat_close($s)
+{
+    $cid = (int) $s['user_id'];
+    $chat = mobile_api_chat_mine($cid);
+    if (!$chat) mobile_api_fail('No chat to close', 404);
+    $rating = (int) mobile_api_in('rating', 0);
+    $rating = $rating >= 1 && $rating <= 5 ? $rating : null;
+    $now = date('Y-m-d H:i:s');
+    if ($chat['status'] === 'open') {
+        ORM::get_db()->prepare("UPDATE tbl_mobile_chat SET status = 'closed', closed_at = ?, rating = ? WHERE id = ?")->execute([$now, $rating, (int) $chat['id']]);
+        mobile_api_chat_add($chat['id'], 'system', 0, '', 'The customer ended the chat.', 'app');
+    } elseif ($rating !== null && $chat['rating'] === null) {
+        ORM::get_db()->prepare('UPDATE tbl_mobile_chat SET rating = ? WHERE id = ?')->execute([$rating, (int) $chat['id']]);
+    }
+    mobile_api_out(['ok' => true]);
+}
+
+/** Open chats nobody has touched for a day are closed so the inbox stays tidy. */
+function mobile_api_chat_sweep()
+{
+    $h = mobile_api_chat_cfg()['close_hours'];
+    $old = date('Y-m-d H:i:s', time() - $h * 3600);
+    $now = date('Y-m-d H:i:s');
+    foreach (mobile_api_rows("SELECT id FROM tbl_mobile_chat WHERE status = 'open' AND last_msg_at < ? LIMIT 50", [$old]) as $c) {
+        ORM::get_db()->prepare("UPDATE tbl_mobile_chat SET status = 'closed', closed_at = ? WHERE id = ? AND status = 'open'")->execute([$now, (int) $c['id']]);
+        mobile_api_chat_add($c['id'], 'system', 0, '', 'Chat closed automatically after ' . $h . ' hours without activity.', 'app');
+    }
+}
+
+function mobile_api_chat_title($c)
+{
+    if ((int) $c['customer_id'] > 0) return $c['_name'] ?? 'Customer';
+    return trim((string) $c['guest_name']) !== '' ? $c['guest_name'] . ' (visitor)' : 'Website visitor';
+}
+
+function mobile_api_chat_list($s)
+{
+    $f = (string) mobile_api_in('filter', 'open');
+    $me = (int) $s['user_id'];
+    $where = "c.status = 'open'";
+    $args = [];
+    if ($f === 'mine') { $where .= ' AND c.assigned_to = ?'; $args[] = $me; }
+    elseif ($f === 'unassigned') { $where .= ' AND c.assigned_to = 0'; }
+    elseif ($f === 'closed') { $where = "c.status = 'closed'"; }
+    $rows = mobile_api_rows("SELECT c.*, cu.fullname, cu.username FROM tbl_mobile_chat c LEFT JOIN tbl_customers cu ON cu.id = c.customer_id AND c.customer_id > 0 WHERE $where ORDER BY c.staff_unread > 0 DESC, c.last_msg_at DESC LIMIT 80", $args);
+    $out = [];
+    foreach ($rows as $c) {
+        $c['_name'] = $c['fullname'] ?: $c['username'];
+        $out[] = ['id' => (int) $c['id'], 'name' => mobile_api_chat_title($c), 'source' => $c['source'], 'status' => $c['status'], 'assigned_to' => (int) $c['assigned_to'],
+            'agent' => (string) $c['assigned_name'], 'mine' => (int) $c['assigned_to'] === $me, 'unread' => (int) $c['staff_unread'], 'preview' => (string) $c['last_preview'],
+            'last_sender' => (string) $c['last_sender'], 'at' => $c['last_msg_at'], 'rating' => $c['rating'] === null ? null : (int) $c['rating']];
+    }
+    $cnt = mobile_api_rows("SELECT SUM(status='open') o, SUM(status='open' AND assigned_to=0) u, SUM(status='open' AND assigned_to = ?) m, SUM(status='open' AND staff_unread>0) w FROM tbl_mobile_chat", [$me]);
+    $cfg = mobile_api_chat_cfg();
+    $canEdit = !empty($s['access']['super']) || !empty($s['access']['assign']);
+    mobile_api_out(['ok' => true, 'chats' => $out, 'counts' => ['open' => (int) $cnt[0]['o'], 'unassigned' => (int) $cnt[0]['u'], 'mine' => (int) $cnt[0]['m'], 'waiting' => (int) $cnt[0]['w']],
+        'settings' => $cfg, 'can_edit_settings' => $canEdit]);
+}
+
+function mobile_api_chat_get($id)
+{
+    $r = mobile_api_rows('SELECT c.*, cu.fullname, cu.username, cu.phonenumber FROM tbl_mobile_chat c LEFT JOIN tbl_customers cu ON cu.id = c.customer_id AND c.customer_id > 0 WHERE c.id = ?', [(int) $id]);
+    if (!$r) mobile_api_fail('Chat not found', 404);
+    $r[0]['_name'] = $r[0]['fullname'] ?: $r[0]['username'];
+    return $r[0];
+}
+
+function mobile_api_chat_thread($s)
+{
+    $c = mobile_api_chat_get(mobile_api_in('id'));
+    if ((int) $c['staff_unread'] > 0) {
+        ORM::get_db()->prepare('UPDATE tbl_mobile_chat SET staff_unread = 0 WHERE id = ?')->execute([(int) $c['id']]);
+    }
+    mobile_api_out(['ok' => true, 'chat' => ['id' => (int) $c['id'], 'name' => mobile_api_chat_title($c), 'customer_id' => (int) $c['customer_id'], 'username' => (string) $c['username'],
+        'phone' => (int) $c['customer_id'] > 0 ? (string) $c['phonenumber'] : (string) $c['guest_contact'], 'source' => $c['source'], 'status' => $c['status'],
+        'assigned_to' => (int) $c['assigned_to'], 'agent' => (string) $c['assigned_name'], 'mine' => (int) $c['assigned_to'] === (int) $s['user_id'],
+        'rating' => $c['rating'] === null ? null : (int) $c['rating']],
+        'messages' => mobile_api_chat_msgs($c['id'], (int) mobile_api_in('after', 0))]);
+}
+
+function mobile_api_chat_send($s)
+{
+    $c = mobile_api_chat_get(mobile_api_in('id'));
+    if ($c['status'] !== 'open') mobile_api_fail('This chat is closed', 409);
+    $body = mobile_api_chat_clean(mobile_api_in('body'));
+    if ($body === '') mobile_api_fail('Type a message first', 422);
+    $uid = (int) $s['user_id'];
+    $name = $s['access']['name'];
+    $now = date('Y-m-d H:i:s');
+    $db = ORM::get_db();
+    mobile_api_chat_add($c['id'], 'staff', $uid, $name, $body, 'app');
+    $claim = (int) $c['assigned_to'] === 0;
+    $db->prepare("UPDATE tbl_mobile_chat SET last_msg_at = ?, last_sender = 'staff', last_preview = ?, client_unread = client_unread + 1, staff_unread = 0" . ($claim ? ', assigned_to = ?, assigned_name = ?' : '') . ' WHERE id = ?')
+        ->execute(array_merge([$now, mb_substr($body, 0, 160)], $claim ? [$uid, $name] : [], [(int) $c['id']]));
+    if ((int) $c['customer_id'] > 0 && (int) $c['client_unread'] === 0) {
+        mobile_api_notify(-(int) $c['customer_id'], 'chat', 'Customer care replied', $body, 'chat', (int) $c['id']);
+    }
+    mobile_api_out(['ok' => true, 'messages' => mobile_api_chat_msgs($c['id'], (int) mobile_api_in('after', 0))]);
+}
+
+function mobile_api_chat_assign($s)
+{
+    $c = mobile_api_chat_get(mobile_api_in('id'));
+    $to = (string) mobile_api_in('to', 'me');
+    $uid = (int) $s['user_id'];
+    if ($to === 'none') {
+        if ((int) $c['assigned_to'] !== $uid && empty($s['access']['assign']) && empty($s['access']['super'])) mobile_api_fail('Only the person handling this chat can release it', 403);
+        ORM::get_db()->prepare('UPDATE tbl_mobile_chat SET assigned_to = 0, assigned_name = NULL WHERE id = ?')->execute([(int) $c['id']]);
+    } else {
+        ORM::get_db()->prepare('UPDATE tbl_mobile_chat SET assigned_to = ?, assigned_name = ? WHERE id = ?')->execute([$uid, $s['access']['name'], (int) $c['id']]);
+    }
+    mobile_api_out(['ok' => true]);
+}
+
+function mobile_api_chat_close($s)
+{
+    $c = mobile_api_chat_get(mobile_api_in('id'));
+    if ($c['status'] === 'open') {
+        ORM::get_db()->prepare("UPDATE tbl_mobile_chat SET status = 'closed', closed_at = ?, staff_unread = 0 WHERE id = ?")->execute([date('Y-m-d H:i:s'), (int) $c['id']]);
+        mobile_api_chat_add($c['id'], 'system', 0, '', 'Chat closed by ' . $s['access']['name'] . '.', 'app');
+        if ((int) $c['customer_id'] > 0) mobile_api_notify(-(int) $c['customer_id'], 'chat', 'Chat closed', 'Please rate your conversation.', 'chat', (int) $c['id']);
+    }
+    mobile_api_out(['ok' => true]);
+}
+
+function mobile_api_chat_settings_save($s)
+{
+    if (empty($s['access']['super']) && empty($s['access']['assign'])) mobile_api_fail('Only a manager can change chat settings', 403);
+    mobile_api_safe(function () { ORM::get_db()->exec('ALTER TABLE tbl_mobile_settings MODIFY v TEXT NOT NULL'); }); // older installs had a 200 character limit
+    mobile_api_setting_set('chat_on', mobile_api_in('on', 1) ? 1 : 0);
+    mobile_api_setting_set('chat_welcome', mb_substr(trim((string) mobile_api_in('welcome')), 0, 300));
+    mobile_api_setting_set('chat_hours', mb_substr(trim((string) mobile_api_in('hours')), 0, 100));
+    mobile_api_setting_set('chat_offline', mb_substr(trim((string) mobile_api_in('offline')), 0, 300));
+    mobile_api_setting_set('chat_canned', mb_substr(trim((string) mobile_api_in('canned')), 0, 1500));
+    mobile_api_setting_set('chat_close_hours', max(1, min(240, (int) mobile_api_in('close_hours', 24))));
+    mobile_api_out(['ok' => true, 'settings' => mobile_api_chat_cfg()]);
+}
+
+function mobile_api_chat_home($cid)
+{
+    $on = mobile_api_chat_cfg()['on'];
+    $u = mobile_api_safe(function () use ($cid) {
+        $r = mobile_api_rows("SELECT COALESCE(SUM(client_unread),0) n FROM tbl_mobile_chat WHERE customer_id = ? AND status = 'open'", [(int) $cid]);
+        return (int) $r[0]['n'];
+    }, 0);
+    return ['enabled' => $on, 'unread' => $u];
 }

@@ -30,7 +30,8 @@ object Offline {
         "client_stk", "client_stk_status", "client_wifi_set", "client_wifi_get", "client_ticket_create", "client_ticket_comment_add",
         "notice_save", "notice_end", "client_loyalty_apply", "client_loyalty_redeem", "loyalty_settings_save", "loyalty_adjust", "loyalty_referrer_set",
         "activation_apply", "activation_preview", "client_pause_status", "client_pause_start", "client_pause_resume", "client_autorenew_set", "client_family", "client_family_add", "client_family_respond", "client_family_remove", "client_family_member", "client_family_buy",
-        "pause_overview", "pause_staff_start", "pause_staff_resume", "pause_settings_save", "coverage_geocode", "coverage_check", "coverage_public", "netmap_asset_save", "netmap_asset_delete", "netmap_onu_place", "netmap_trace", "netmap_unplaced", "sessions_list", "session_revoke", "admin_user_logout") + queueable
+        "pause_overview", "pause_staff_start", "pause_staff_resume", "pause_settings_save", "coverage_geocode", "coverage_check", "coverage_public", "netmap_asset_save", "netmap_asset_delete", "netmap_onu_place", "netmap_trace", "netmap_unplaced", "sessions_list", "session_revoke", "admin_user_logout",
+        "client_chat", "client_chat_send", "client_chat_close", "chat_list", "chat_thread", "chat_send", "chat_assign", "chat_close", "chat_settings_save") + queueable
 
     var pending by mutableIntStateOf(0)
         private set
