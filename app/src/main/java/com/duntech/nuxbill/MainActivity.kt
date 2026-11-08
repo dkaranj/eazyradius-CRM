@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
@@ -53,6 +54,7 @@ import kotlinx.coroutines.launch
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
         Store.init(this)
         ThemeState.init(this)
         AppLock.init(this)
@@ -65,6 +67,21 @@ class MainActivity : FragmentActivity() {
             NuxTheme {
                 Surface(Modifier.fillMaxSize()) {
                     Box(Modifier.fillMaxSize()) {
+                        var crash by remember { mutableStateOf(CrashLog.pending(this@MainActivity)) }
+                        crash?.let { trace ->
+                            androidx.compose.material3.AlertDialog(
+                                onDismissRequest = { CrashLog.clear(this@MainActivity); crash = null },
+                                title = { Text("The app closed unexpectedly last time") },
+                                text = { androidx.compose.foundation.layout.Column(Modifier.height(320.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) { Text(trace, style = MaterialTheme.typography.labelSmall) } },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", trace))
+                                    }) { Text("Copy") }
+                                },
+                                dismissButton = { TextButton(onClick = { CrashLog.clear(this@MainActivity); crash = null }) { Text("Close") } }
+                            )
+                        }
                         App()
                         if (AppLock.locked && Api.token.isNotEmpty()) {
                             LockScreen(onLogout = {
