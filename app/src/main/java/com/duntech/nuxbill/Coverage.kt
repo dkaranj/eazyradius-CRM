@@ -128,35 +128,39 @@ fun CoverageScreen(reload: Int) {
 fun PublicCoverageDialog(base: String, onClose: () -> Unit) {
     val busy = remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<JSONObject?>(null) }
-    AlertDialog(
-        onDismissRequest = onClose,
-        confirmButton = { TextButton(onClick = onClose) { Text("Close") } },
-        title = { Text("Do you cover my area?") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                PlaceSearch(null, { lat, lng, _ -> result = Api.call("coverage_public", mapOf("lat" to lat.toString(), "lng" to lng.toString())) }, busy)
-                var q by remember { mutableStateOf("") }
-                val ctx = LocalContext.current
-                val scope = rememberCoroutineScope()
-                OutlinedTextField(q, { q = it }, label = { Text("Or type your estate or street") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Button(enabled = !busy.value && q.trim().length >= 3, onClick = {
-                    busy.value = true
-                    scope.launch {
-                        try { result = Api.call("coverage_public", mapOf("q" to q.trim())) } catch (e: Exception) { toast(ctx, e.message) }
-                        busy.value = false
-                    }
-                }) { Text("Check") }
-                if (busy.value) LinearProgressIndicator(Modifier.fillMaxWidth())
-                result?.let { r ->
-                    val c = levelColor(r.optString("level"))
-                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = c.copy(alpha = 0.15f))) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(r.optString("message"), fontWeight = FontWeight.SemiBold)
-                            if (r.optString("place").isNotBlank()) Text(r.optString("place"), style = MaterialTheme.typography.bodySmall)
+    var q by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Do you cover my area?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = onClose) { Text("Close") }
+                }
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Tell us where you are and we will check whether our fibre reaches you.", style = MaterialTheme.typography.bodyMedium)
+                    PlaceSearch(null, { lat, lng, _ -> result = Api.call("coverage_public", mapOf("lat" to lat.toString(), "lng" to lng.toString())) }, busy)
+                    OutlinedTextField(q, { q = it }, label = { Text("Or type your estate or street") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Button(enabled = !busy.value && q.trim().length >= 3, onClick = {
+                        busy.value = true
+                        scope.launch {
+                            try { result = Api.call("coverage_public", mapOf("q" to q.trim())) } catch (e: Exception) { toast(ctx, e.message) }
+                            busy.value = false
+                        }
+                    }) { Text("Check") }
+                    if (busy.value) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    result?.let { r ->
+                        val c = levelColor(r.optString("level"))
+                        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = c.copy(alpha = 0.15f))) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(r.optString("message"), fontWeight = FontWeight.SemiBold)
+                                if (r.optString("place").isNotBlank()) Text(r.optString("place"), style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
             }
         }
-    )
+    }
 }
