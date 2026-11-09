@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -251,7 +253,13 @@ fun RoleShell(auth: Auth, onAuth: (Auth) -> Unit, onLogout: () -> Unit) {
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text(roleLabel + if (auth.name.isNotBlank()) " · " + auth.name else "") },
+                    title = {
+                        androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(R.drawable.ic_logo), "Eazyradius", Modifier.size(30.dp))
+                            androidx.compose.foundation.layout.Spacer(Modifier.width(10.dp))
+                            Text(roleLabel + if (auth.name.isNotBlank()) " · " + auth.name else "", maxLines = 1)
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = r.header,
                         scrolledContainerColor = r.header,
