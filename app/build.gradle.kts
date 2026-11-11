@@ -11,8 +11,18 @@ android {
         applicationId = "com.duntech.eazyradius"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "1.0.0"
+    }
+
+    // One fixed signing key, so every new APK installs over the old one instead of being refused.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("eazyradius-debug.jks")
+            storePassword = "eazyradius"
+            keyAlias = "eazyradius"
+            keyPassword = "eazyradius"
+        }
     }
 
     buildTypes {
